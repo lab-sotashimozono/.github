@@ -14,9 +14,12 @@ SRC="$HERE/pre-push"
 
 installed=0; chained=0; already=0; skipped=0
 for dir in "$@"; do
-  gitdir=$(git -C "$dir" rev-parse --git-dir 2>/dev/null) || { skipped=$((skipped+1)); continue; }
-  case "$gitdir" in /*) ;; *) gitdir="$(cd "$dir" && pwd)/${gitdir#./}" ;; esac
-  hooks="$gitdir/hooks"; mkdir -p "$hooks"
+  git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || { skipped=$((skipped+1)); continue; }
+  # `--git-path hooks` honours core.hooksPath — a repo that sets it (e.g. a tracked
+  # .githooks/ with gitleaks) ignores .git/hooks entirely, so writing there would be inert.
+  hooks=$(git -C "$dir" rev-parse --git-path hooks 2>/dev/null)
+  case "$hooks" in /*) ;; *) hooks="$(cd "$dir" && pwd)/$hooks" ;; esac
+  mkdir -p "$hooks"
   hook="$hooks/pre-push"
 
   if [ -f "$hook" ] && grep -q 'REFUSING non-fast-forward' "$hook" 2>/dev/null; then
