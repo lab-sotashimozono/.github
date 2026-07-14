@@ -1,14 +1,31 @@
 name: Format Check
 
-# Reusable JuliaFormatter v2 check. Callers pass `runner` (JSON runs-on):
+# Reusable JuliaFormatter check. Callers pass `runner` (JSON runs-on):
 # private → '["self-hosted","rosina"]', public → '"ubuntu-latest"'.
-# One place to pin the formatter version fleet-wide (kills the per-repo flake).
+#
+# TWO things here are load-bearing — do not "simplify" them away:
+#
+# 1. `Pkg.activate(; temp=true)` — a CLEAN env. Installing into the runner's shared/default
+#    environment lets that depot's existing compat bounds cap the resolve: on rosina a floating
+#    `version="2"` silently resolved to **JuliaFormatter 2.3.2**, while a laptop resolved 2.10.1.
+#    Same code, different verdict → the long-standing "format-check flake". It was never a flake,
+#    it was version drift.
+# 2. `JF_VERSION` is an EXACT pin, not a range. CI and your laptop must run the *same* formatter
+#    or the check is not reproducible. Bump it here, once, and reformat the fleet with that
+#    version — never let it float.
+#
+# Format locally with exactly this version:
+#   julia -e 'using Pkg; Pkg.activate(;temp=true); Pkg.add(PackageSpec(name="JuliaFormatter",
+#             version="2.10.1")); using JuliaFormatter; format(".")'
 on:
   workflow_call:
     inputs:
       runner:
         type: string
         default: '"ubuntu-latest"'
+
+env:
+  JF_VERSION: '2.10.1'
 
 jobs:
   format-check:
@@ -18,16 +35,23 @@ jobs:
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1'
-      - name: JuliaFormatter v2 check
+      - name: JuliaFormatter ${{ env.JF_VERSION }} check
         shell: julia --color=yes {0}
         run: |
           using Pkg
-          Pkg.add(PackageSpec(name = "JuliaFormatter", version = "2"))
+          Pkg.activate(; temp = true)                       # clean env — no depot compat capping the resolve
+          Pkg.add(PackageSpec(name = "JuliaFormatter", version = ENV["JF_VERSION"]))
           using JuliaFormatter
-          @info "JuliaFormatter $(pkgversion(JuliaFormatter))"
+          v = pkgversion(JuliaFormatter)
+          @info "JuliaFormatter $v (pinned $(ENV["JF_VERSION"]))"
+          if string(v) != ENV["JF_VERSION"]
+              println(stderr, "❌ resolved JuliaFormatter $v, expected $(ENV["JF_VERSION"]) — the check would not be reproducible.")
+              exit(1)
+          end
           ok = format("."; verbose = true, overwrite = false)
           if !ok
-              println(stderr, "❌ Not formatted. Run JuliaFormatter v2 locally: julia -e 'using JuliaFormatter; format(\".\")'")
+              println(stderr, "❌ Not formatted. Run locally with the SAME version:")
+              println(stderr, "   julia -e 'using Pkg; Pkg.activate(;temp=true); Pkg.add(PackageSpec(name=\"JuliaFormatter\", version=\"$(ENV["JF_VERSION"])\")); using JuliaFormatter; format(\".\")'")
               exit(1)
           end
           println("✅ All files properly formatted.")
