@@ -34,6 +34,17 @@ while IFS=$'\t' read -r repo vis _; do
   [[ -n "$ONLY" && "$ONLY" != "$repo" ]] && continue
   echo "-- $repo ($vis)"
   "$HERE/apply-ruleset.sh" "$repo" || echo "   ruleset FAILED (plan/permission?)"
+
+  # Actions access: let this repo's actions / reusable workflows be called from anywhere in
+  # the org ("Accessible from repositories in the lab-sotashimozono organization"). Only
+  # meaningful for PRIVATE repos — a public repo's workflows are already callable by anyone.
+  if [ "$vis" = private ]; then
+    if gh api -X PUT "/repos/$ORG/$repo/actions/permissions/access" -f access_level=organization >/dev/null 2>&1; then
+      echo "   actions access = organization"
+    else
+      echo "   actions access FAILED"
+    fi
+  fi
   has "$repo" FormatCheck.yml  && echo "   FormatCheck  present" || echo "   FormatCheck  MISSING -> init-repo.sh $repo $vis"
   has "$repo" AutoRegister.yml && echo "   AutoRegister present" || echo "   AutoRegister absent (ok for apps/experiments — not registrable)"
 done < "$MANIFEST"
