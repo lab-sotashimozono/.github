@@ -1,0 +1,5 @@
+# Declarative repo manifest for lab-sotashimozono.
+# One repo per line:  <repo-name><TAB><public|private>
+# Add a line and re-run scripts/setup.sh to reconcile (ruleset + secret + CI check).
+#
+# repo	visibility

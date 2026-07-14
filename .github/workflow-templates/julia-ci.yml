@@ -1,0 +1,13 @@
+name: CI
+on:
+  push:
+    branches: [$default-branch]
+  pull_request:
+
+jobs:
+  ci:
+    # Public default. For a private repo, switch runner to
+    # '["self-hosted","rosina"]' and setup_julia: false.
+    uses: lab-sotashimozono/.github/.github/workflows/julia-ci.yml@main
+    with:
+      runner: '"ubuntu-latest"'

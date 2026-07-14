@@ -1,0 +1,7 @@
+{
+  "name": "Julia CI (lab)",
+  "description": "Test + JuliaFormatter v2 via the lab reusable workflow. Route private repos to rosina.",
+  "iconName": "example",
+  "categories": ["Julia"],
+  "filePatterns": ["Project\\.toml$"]
+}

@@ -1,0 +1,52 @@
+name: Julia CI
+
+# Reusable CI. Callers pass `runner` (JSON runs-on) to route
+# private -> [self-hosted, rosina], public -> ubuntu-latest.
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: 'JSON value for runs-on, e.g. ''"ubuntu-latest"'' or ''["self-hosted","rosina"]'''
+        type: string
+        default: '"ubuntu-latest"'
+      julia_version:
+        type: string
+        default: '1'
+      setup_julia:
+        description: 'Install Julia via setup-julia (set false on self-hosted with juliaup)'
+        type: boolean
+        default: true
+
+jobs:
+  test:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    steps:
+      - uses: actions/checkout@v4
+      - if: ${{ inputs.setup_julia }}
+        uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ inputs.julia_version }}
+      - uses: julia-actions/cache@v2
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
+
+  format:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    steps:
+      - uses: actions/checkout@v4
+      - if: ${{ inputs.setup_julia }}
+        uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+      # Pin JuliaFormatter to the floating v2 line (matches the fleet's format-check).
+      - name: JuliaFormatter v2 check
+        shell: julia --color=yes {0}
+        run: |
+          using Pkg
+          Pkg.add(PackageSpec(name = "JuliaFormatter", version = "2"))
+          using JuliaFormatter
+          ok = format("."; verbose = true)
+          if !ok
+              @error "Repository is not formatted. Run JuliaFormatter v2 locally and commit."
+              exit(1)
+          end

@@ -1,0 +1,11 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    uses: lab-sotashimozono/.github/.github/workflows/julia-ci.yml@main
+    with:
+      runner: '"ubuntu-latest"'
