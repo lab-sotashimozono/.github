@@ -1,0 +1,8 @@
+name: Format Check
+on:
+  pull_request:
+jobs:
+  format:
+    uses: lab-sotashimozono/.github/.github/workflows/format-check.yml@main
+    with:
+      runner: '["self-hosted","rosina"]'

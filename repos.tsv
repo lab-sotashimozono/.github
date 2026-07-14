@@ -1,5 +1,23 @@
 # Declarative repo manifest for lab-sotashimozono.
 # One repo per line:  <repo-name><TAB><public|private>
-# Add a line and re-run scripts/setup.sh to reconcile (ruleset + secret + CI check).
+# Add a line and re-run scripts/setup.sh to reconcile (branch-protection ruleset + checks).
 #
 # repo	visibility
+ParaLinearAlgebra.jl	private
+ITensorMPSKit.jl	private
+ComplexTimeEvolution.jl	private
+EnvTPQMPS.jl	private
+ITensorcMPS.jl	private
+FibVUMPS.jl	private
+ReducedEnvExperiments.jl	private
+ComplexTimeExperiments.jl	private
+ParameterizedITensor.jl	private
+ReducedEnvironmentBlock.jl	private
+ITensorAD.jl	private
+CocycleMPS.jl	private
+ITensorInfiniteMPSKit.jl	private
+ThermalMPS.jl	private
+SingleSiteDMRG.jl	private
+WilsonNRG.jl	public
+ITensorModels.jl	public
+ITensorSiteKit.jl	public

@@ -1,13 +1,11 @@
 name: CompatHelper
 
-# Reusable CompatHelper. Runs on hosted runners (cheap, isolated) even for
-# private repos. Callers schedule it and forward COMPATHELPER_TOKEN so the
-# opened PR can itself trigger CI (GITHUB_TOKEN-authored PRs cannot).
+# Reusable CompatHelper. Runs on hosted runners (cheap, isolated) even for private repos.
+# Callers schedule it and pass `secrets: inherit`; BOT_PAT is an ORG secret (visibility=all),
+# so the opened PR is authored by the PAT and therefore *does* trigger the repo's CI
+# (a GITHUB_TOKEN-authored PR would not).
 on:
-  workflow_call:
-    secrets:
-      COMPATHELPER_TOKEN:
-        required: false
+  workflow_call: {}
 
 jobs:
   compathelper:
@@ -21,6 +19,4 @@ jobs:
       - name: Run CompatHelper
         run: julia -e 'using CompatHelper; CompatHelper.main()'
         env:
-          # PAT (COMPATHELPER_TOKEN) so the opened PR triggers CI; falls back to
-          # the built-in token (PR then won't trigger downstream CI) if unset.
-          GITHUB_TOKEN: ${{ secrets.COMPATHELPER_TOKEN || secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.BOT_PAT || github.token }}
