@@ -28,7 +28,7 @@ git checkout -b chore/adopt-org-workflows
 
 mkdir -p .github/workflows
 cp "$TPL/FormatCheck.$VIS.yml" .github/workflows/FormatCheck.yml
-cp "$TPL/CompatHelper.yml"     .github/workflows/CompatHelper.yml
+cp "$TPL/CompatHelper.$VIS.yml" .github/workflows/CompatHelper.yml
 cp "$TPL/AutoRegister.yml"     .github/workflows/AutoRegister.yml
 cp "$TPL/dependabot.yml"       .github/dependabot.yml
 

@@ -1,0 +1,14 @@
+name: CompatHelper
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+jobs:
+  compat:
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: lab-sotashimozono/.github/.github/workflows/compathelper.yml@main
+    with:
+      runner: '["self-hosted","rosina"]'
+    secrets: inherit   # BOT_PAT is an org secret (visibility=all)
