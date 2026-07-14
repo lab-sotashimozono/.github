@@ -1,0 +1,16 @@
+name: Release Drafter   # AutoRegister keys off this exact name — do not rename
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, reopened, synchronize, edited]   # autolabeler acts on PRs
+permissions:
+  contents: read
+jobs:
+  update_release_draft:
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: lab-sotashimozono/.github/.github/workflows/release-drafter.yml@main
+    with:
+      runner: '"ubuntu-latest"'

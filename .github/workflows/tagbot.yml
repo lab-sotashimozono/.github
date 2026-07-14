@@ -1,0 +1,32 @@
+name: TagBot
+
+# Reusable. JuliaRegistries/TagBot — creates the git tag + GitHub release AFTER a version is
+# registered in the **General** registry (it reacts to a comment from the `JuliaTagBot` bot).
+#
+# PUBLIC REPOS ONLY. A private repo cannot be in General, so JuliaTagBot never comments and
+# this workflow can never fire — it is dead weight there. Private repos get their tag from the
+# `autoregister.yml` private branch instead (version bump → push vX.Y.Z → PublishRelease).
+#
+# Runs on ubuntu-latest: it is a couple of API calls, and public repos cannot use the
+# private-only rosina pool anyway.
+on:
+  workflow_call:
+    secrets:
+      DOCUMENTER_KEY:
+        required: false
+
+jobs:
+  TagBot:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+      checks: read
+      statuses: read
+      issues: read
+      pull-requests: read
+    steps:
+      - uses: JuliaRegistries/TagBot@v1
+        with:
+          token: ${{ github.token }}
+          ssh: ${{ secrets.DOCUMENTER_KEY }}
