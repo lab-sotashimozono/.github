@@ -1,0 +1,73 @@
+name: CleanupPreview
+
+# Reusable teardown of a docs preview when its PR closes — the third leg of the docs trio
+# (`documentation.yml` builds, deploys and previews; this one deletes the preview).
+#
+# `target` mirrors `documentation.yml`:
+#
+#   gh-pages  remove `previews/PR<n>` from the gh-pages branch and push.
+#   path      remove `<path-dest>/previews/PR<n>` from the runner's filesystem (self-hosted host).
+#
+# Deleting nothing is not an error: a PR that never built docs has no preview, and saying so is the
+# correct outcome.
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: 'runs-on, as JSON: ''"ubuntu-latest"'' or ''["self-hosted","rosina"]'''
+        type: string
+        default: '"ubuntu-latest"'
+      target:
+        description: "where the preview lives: 'gh-pages' or 'path' (must match documentation.yml)"
+        type: string
+        default: 'gh-pages'
+      path-dest:
+        description: "target='path': the same site root documentation.yml published to"
+        type: string
+        default: ''
+
+jobs:
+  cleanup:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    steps:
+      - uses: actions/checkout@v4
+        if: ${{ inputs.target == 'gh-pages' }}
+        with:
+          ref: gh-pages
+
+      - name: Remove the preview from gh-pages
+        if: ${{ inputs.target == 'gh-pages' }}
+        run: |
+          set -euo pipefail
+          dir="previews/PR${{ github.event.pull_request.number }}"
+          if [ -d "$dir" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git rm -r "$dir"
+            git commit -m "chore: remove docs preview for PR#${{ github.event.pull_request.number }}"
+            git push
+          else
+            echo "no preview directory to remove"
+          fi
+
+      - name: Remove the preview from the runner directory
+        if: ${{ inputs.target == 'path' }}
+        run: |
+          set -euo pipefail
+          dest='${{ inputs.path-dest }}'
+          if [ -z "$dest" ]; then
+            echo "::error::target='path' requires path-dest"
+            exit 1
+          fi
+          dir="$dest/previews/PR${{ github.event.pull_request.number }}"
+          case "$dir" in
+            */previews/PR[0-9]*) ;;                       # refuse to rm -rf anything but a preview dir
+            *) echo "::error::refusing to delete $dir"; exit 1 ;;
+          esac
+          if [ -d "$dir" ]; then
+            rm -rf "$dir"
+            echo "removed $dir"
+          else
+            echo "no preview directory to remove"
+          fi

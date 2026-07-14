@@ -1,0 +1,19 @@
+name: Documentation
+on:
+  push:
+    branches: [main]
+    tags: '*'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+  statuses: write
+  pull-requests: write
+  pages: write
+jobs:
+  docs:
+    uses: lab-sotashimozono/.github/.github/workflows/documentation.yml@main
+    # public repo ⇒ hosted runner (the self-hosted group has "Allow public repositories" OFF), and
+    # GitHub Pages genuinely serves a public repo, so gh-pages is a real host here.
+    secrets: inherit

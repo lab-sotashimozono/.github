@@ -1,0 +1,14 @@
+name: CleanupPreview
+on:
+  pull_request:
+    types: [closed]
+permissions:
+  contents: write
+jobs:
+  cleanup:
+    uses: lab-sotashimozono/.github/.github/workflows/docs-cleanup-preview.yml@main
+    with:
+      runner: '["self-hosted","rosina"]'
+      # keep in step with Documentation.yml: 'path' + path-dest when the docs move to the box
+      target: 'gh-pages'
+    secrets: inherit
