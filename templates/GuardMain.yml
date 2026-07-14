@@ -1,0 +1,10 @@
+name: Guard main
+on:
+  push:
+    branches: [main]
+jobs:
+  guard:
+    if: github.event.forced
+    permissions:
+      issues: write
+    uses: lab-sotashimozono/.github/.github/workflows/guard-main.yml@main

@@ -1,0 +1,63 @@
+name: Guard main
+
+# Reusable. The caller fires on `push` to main and only calls this when the push was
+# FORCED. Actions cannot *prevent* a push (they run after it lands) — branch protection
+# is the only thing that can, and that is Team-gated for private repos. So this is the
+# detective half of the guard: it makes a clobbering force-push LOUD and RECOVERABLE by
+# recording the overwritten head SHA in an issue. The preventive half is the client-side
+# `pre-push` hook (scripts/install-pre-push.sh) — that one actually refuses the push.
+#
+# Deliberately does NOT auto-revert: a force-push is sometimes intentional (a rebase you
+# meant), and auto-restoring would destroy that instead. Record + alert; a human decides.
+on:
+  workflow_call: {}
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Record the clobbered history and alert
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          BODY=$(cat <<EOF
+          A **forced (non-fast-forward) push to \`main\`** landed in \`$REPO\`.
+
+          | | |
+          |---|---|
+          | overwritten head (**before**) | \`$BEFORE\` |
+          | new head (**after**) | \`$AFTER\` |
+          | pushed by | @$ACTOR |
+
+          The overwritten commits are **not lost** — they stay reachable by SHA for ~90 days.
+
+          **Inspect what was overwritten**
+          \`\`\`bash
+          git fetch origin
+          git log --oneline $BEFORE -20
+          git diff $BEFORE..$AFTER
+          \`\`\`
+
+          **Restore, if this was an accident**
+          \`\`\`bash
+          git push --force origin $BEFORE:main
+          \`\`\`
+
+          If the force-push was intentional, just close this issue.
+
+          _(This repo is private on a Free org, so server-side branch protection is unavailable.
+          The client-side \`pre-push\` hook is what actually refuses these — if this fired, the
+          push came from somewhere without the hook installed.)_
+          EOF
+          )
+          gh issue create --repo "$REPO" \
+            --title "⚠️ forced push to main — previous head ${BEFORE:0:12}" \
+            --body "$BODY"
+          echo "::error::Forced push to main. Previous head $BEFORE recorded in a new issue."
+          exit 1
