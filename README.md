@@ -49,12 +49,22 @@ rerun `setup.sh`, then stamp its workflows once:
 scripts/init-repo.sh <repo> <public|private>   # opens a chore/adopt-org-workflows PR
 ```
 
-### Branch protection on Free
+### Branch protection — the plan gate (verified, not guessed)
 
-Protection uses **repository rulesets** (`/repos/{o}/{r}/rulesets`), which work on Free — private
-repos included. The **org-level** ruleset endpoint would need Team, so `setup.sh` applies per repo
-(still one command). Rules: no deletion, no force-push, linear history, PR required (0 approvals),
-with **OrganizationAdmin bypass** so you can still bootstrap/hotfix directly.
+Protection uses **repository rulesets** (`/repos/{o}/{r}/rulesets`); rules: no deletion, no
+force-push, linear history, PR required (0 approvals), with **OrganizationAdmin bypass** so you
+can still bootstrap/hotfix directly.
+
+| | **Free** (today) | **Team** |
+|---|---|---|
+| public repo | ✅ applied | ✅ |
+| private repo | ❌ `403 Upgrade to GitHub Pro or make this repository public` | ✅ |
+
+An admin token applies *settings*; it cannot bypass a *plan gate*. So today only the 3 public
+repos are protected — the 15 private ones have **no server-side branch protection**. Upgrading
+the org to Team needs **no change** to `setup.sh`: rerun it and every private repo picks the
+ruleset up. Until then, treat main on private repos as convention-protected (the admin bypass
+would have made it advisory for you anyway).
 
 ## Layout
 
