@@ -1,0 +1,62 @@
+name: AutoRegister
+
+# Reusable. The per-repo caller is triggered by `workflow_run` after "Release Drafter"
+# completes on main. On a Project.toml VERSION BUMP it branches by repo visibility:
+#   PUBLIC  → request General registration via a @JuliaRegistrator comment
+#             (→ JuliaTagBot → the repo's TagBot → PublishRelease).
+#   PRIVATE → push a vX.Y.Z tag (no registry) which fires the repo's PublishRelease.
+# Runs on ubuntu-latest: it's lightweight (git + one API call), and public repos cannot
+# use the private-only rosina pool anyway. The private tag is pushed with BOT_PAT so it
+# actually triggers PublishRelease (a GITHUB_TOKEN-pushed tag does not trigger workflows).
+on:
+  workflow_call: {}
+
+jobs:
+  autoregister:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 2
+          token: ${{ secrets.BOT_PAT || github.token }}
+
+      - name: Detect version bump
+        id: v
+        run: |
+          PREV=$(git show HEAD~1:Project.toml 2>/dev/null | grep '^version' | head -1 | sed 's/.*"\(.*\)"/\1/' || echo "")
+          CURR=$(grep '^version' Project.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          echo "curr=$CURR" >> "$GITHUB_OUTPUT"
+          if [ "$PREV" != "$CURR" ] && [ -n "$CURR" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version: $PREV -> $CURR"
+
+      - name: Public → request General registration (@JuliaRegistrator)
+        if: steps.v.outputs.changed == 'true' && github.event.repository.private == false
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BODY=$(printf '@JuliaRegistrator register\n\n## Changelog\n\nRelease v%s.' "${{ steps.v.outputs.curr }}")
+          gh api "repos/${{ github.repository }}/commits/${{ github.event.workflow_run.head_sha }}/comments" \
+            -f body="$BODY"
+          echo "Requested General registration for v${{ steps.v.outputs.curr }}"
+
+      - name: Private → tag vX.Y.Z (no registry; fires PublishRelease)
+        if: steps.v.outputs.changed == 'true' && github.event.repository.private == true
+        run: |
+          TAG="v${{ steps.v.outputs.curr }}"
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q "$TAG"; then
+            echo "$TAG already exists — skip"; exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG" "${{ github.event.workflow_run.head_sha }}"
+          git push origin "$TAG"
+          echo "Pushed $TAG — PublishRelease will publish the GitHub Release"
