@@ -1,0 +1,33 @@
+name: Format Check
+
+# Reusable JuliaFormatter v2 check. Callers pass `runner` (JSON runs-on):
+# private → '["self-hosted","rosina"]', public → '"ubuntu-latest"'.
+# One place to pin the formatter version fleet-wide (kills the per-repo flake).
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: '"ubuntu-latest"'
+
+jobs:
+  format-check:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+      - name: JuliaFormatter v2 check
+        shell: julia --color=yes {0}
+        run: |
+          using Pkg
+          Pkg.add(PackageSpec(name = "JuliaFormatter", version = "2"))
+          using JuliaFormatter
+          @info "JuliaFormatter $(pkgversion(JuliaFormatter))"
+          ok = format("."; verbose = true, overwrite = false)
+          if !ok
+              println(stderr, "❌ Not formatted. Run JuliaFormatter v2 locally: julia -e 'using JuliaFormatter; format(\".\")'")
+              exit(1)
+          end
+          println("✅ All files properly formatted.")
