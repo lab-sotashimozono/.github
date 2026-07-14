@@ -1,0 +1,10 @@
+name: CleanupPreview
+on:
+  pull_request:
+    types: [closed]
+permissions:
+  contents: write
+jobs:
+  cleanup:
+    uses: lab-sotashimozono/.github/.github/workflows/docs-cleanup-preview.yml@main
+    secrets: inherit

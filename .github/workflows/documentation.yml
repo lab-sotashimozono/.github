@@ -1,0 +1,143 @@
+name: Documentation
+
+# Reusable Documenter build + deploy, with the DEPLOY TARGET as an input.
+#
+# Deploy and preview are ONE workflow because that is how Documenter works: `deploydocs` looks at
+# the event and writes either the versioned site (push to main / a tag) or `previews/PR<n>` (a pull
+# request) into the SAME destination. The third piece — tearing a preview down when its PR closes —
+# is a different trigger, so it is its own reusable: `docs-cleanup-preview.yml`.
+#
+# `target` selects where the built site lands:
+#
+#   gh-pages  Documenter pushes the `gh-pages` branch itself (its normal mode). NOTE this only
+#             SERVES anywhere if GitHub Pages actually publishes the repo — on the org's FREE plan a
+#             PRIVATE repo's Pages site is built but NOT served (it 404s), so for private repos this
+#             target archives the site in the branch and nothing more.
+#   path      Copy the built site to a directory ON THE RUNNER (`path-dest`), which is how a
+#             self-hosted box (rosina) can host the docs itself: no gh-pages branch, no GitHub Pages,
+#             no public exposure. `deploydocs` is neutralised by simply not handing it a token, so it
+#             skips deployment and leaves `docs/build` for us to copy. Requires a self-hosted runner.
+#
+# `preview-base-url` is only cosmetic: it is what the PR comment links to. Leave it empty on the
+# `path` target and the comment states the on-box path instead of inventing a URL.
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: 'runs-on, as JSON: ''"ubuntu-latest"'' or ''["self-hosted","rosina"]'''
+        type: string
+        default: '"ubuntu-latest"'
+      julia-version:
+        description: "Julia version for setup-julia ('1' = latest stable 1.x — track upstream)"
+        type: string
+        default: '1'
+      docs-project:
+        description: 'the docs project directory (holds Project.toml and make.jl)'
+        type: string
+        default: 'docs'
+      target:
+        description: "where the built site goes: 'gh-pages' (Documenter pushes the branch) or 'path' (copy to a directory on the runner)"
+        type: string
+        default: 'gh-pages'
+      path-dest:
+        description: "target='path': the site root on the runner, e.g. /srv/docs/MyPkg.jl. The PR preview lands in <path-dest>/previews/PR<n>."
+        type: string
+        default: ''
+      preview-base-url:
+        description: "base URL the PR-preview comment links to. Empty ⇒ derived for 'gh-pages', and stated as an on-box path for 'path'."
+        type: string
+        default: ''
+      pages-rebuild:
+        description: "target='gh-pages': poke the Pages build API after pushing (no-op when Pages does not serve the repo)"
+        type: boolean
+        default: true
+
+jobs:
+  docs:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ inputs.julia-version }}
+
+      - name: Instantiate the docs environment
+        run: |
+          julia --project=${{ inputs.docs-project }} -e '
+            using Pkg
+            Pkg.develop(PackageSpec(path=pwd()))
+            Pkg.instantiate()'
+
+      # `deploydocs` deploys iff it is given credentials. For target='path' we deliberately hand it
+      # NONE, so it prints "skipping deployment" and we take `docs/build` ourselves.
+      - name: Build (and, on target=gh-pages, deploy)
+        env:
+          GITHUB_TOKEN: ${{ inputs.target == 'gh-pages' && secrets.GITHUB_TOKEN || '' }}
+          DOCUMENTER_KEY: ${{ inputs.target == 'gh-pages' && secrets.DOCUMENTER_KEY || '' }}
+        run: julia --project=${{ inputs.docs-project }} ${{ inputs.docs-project }}/make.jl
+
+      - name: Trigger a GitHub Pages rebuild
+        if: ${{ inputs.target == 'gh-pages' && inputs.pages-rebuild && success() }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -s -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/${{ github.repository }}/pages/builds
+
+      # target='path': the runner IS the host. A pull request writes previews/PR<n>; anything else
+      # (push to main, a tag) replaces the site root, leaving `previews/` alone.
+      - name: Publish to the runner directory
+        if: ${{ inputs.target == 'path' && success() }}
+        run: |
+          set -euo pipefail
+          dest='${{ inputs.path-dest }}'
+          if [ -z "$dest" ]; then
+            echo "::error::target='path' requires path-dest"
+            exit 1
+          fi
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            dest="$dest/previews/PR${{ github.event.pull_request.number }}"
+          fi
+          mkdir -p "$dest"
+          rsync -a --delete '${{ inputs.docs-project }}/build/' "$dest/"
+          echo "published $(find "$dest" -type f | wc -l) files to $dest"
+
+      - name: Find an existing preview comment
+        if: ${{ github.event_name == 'pull_request' && success() }}
+        id: find-comment
+        uses: peter-evans/find-comment@v3
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: 'github-actions[bot]'
+          body-includes: 'Docs preview'
+
+      - name: Resolve the preview location
+        if: ${{ github.event_name == 'pull_request' && success() }}
+        id: preview
+        run: |
+          n='${{ github.event.pull_request.number }}'
+          base='${{ inputs.preview-base-url }}'
+          if [ -n "$base" ]; then
+            echo "where=${base%/}/previews/PR$n/" >> "$GITHUB_OUTPUT"
+          elif [ '${{ inputs.target }}' = 'gh-pages' ]; then
+            echo "where=https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/previews/PR$n/" >> "$GITHUB_OUTPUT"
+          else
+            echo "where=\`${{ inputs.path-dest }}/previews/PR$n/\` (on the runner)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Post the preview location to the PR
+        if: ${{ github.event_name == 'pull_request' && success() }}
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          comment-id: ${{ steps.find-comment.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            📚 **Docs preview**: ${{ steps.preview.outputs.where }}
+
+            *(rebuilt on each push to this PR; removed when it closes)*
+          edit-mode: replace
