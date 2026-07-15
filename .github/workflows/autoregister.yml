@@ -9,7 +9,15 @@ name: AutoRegister
 # use the private-only rosina pool anyway. The private tag is pushed with BOT_PAT so it
 # actually triggers PublishRelease (a GITHUB_TOKEN-pushed tag does not trigger workflows).
 on:
-  workflow_call: {}
+  workflow_call:
+    secrets:
+      # BOT_PAT (org secret) must be DECLARED so it reliably reaches this reusable
+      # workflow from a `workflow_run`-triggered caller — `secrets: inherit` alone was
+      # dropping it, so the tag got pushed with GITHUB_TOKEN and did NOT trigger
+      # PublishRelease. Declaring it makes the contract explicit. `required: false` so a
+      # repo without BOT_PAT still falls back to github.token (public/@JuliaRegistrator path).
+      BOT_PAT:
+        required: false
 
 jobs:
   autoregister:
