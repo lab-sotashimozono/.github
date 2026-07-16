@@ -32,9 +32,12 @@ jobs:
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     permissions:
+      # Must NOT exceed what the per-repo callers grant (contents+issues) — a reusable workflow
+      # requesting a permission the caller omits fails to START ("workflow file issue"). Do NOT add
+      # `pull-requests: read` here: build_release_notes.py's `gh pr list` runs with GH_TOKEN=BOT_PAT
+      # (a PAT that already carries PR read); without BOT_PAT it degrades gracefully to auto-notes.
       contents: write
       issues: write
-      pull-requests: read   # build_release_notes.py does `gh pr list` for the changelog
     steps:
       - uses: actions/checkout@v4
         with:
