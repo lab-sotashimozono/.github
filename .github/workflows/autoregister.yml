@@ -4,10 +4,18 @@ name: AutoRegister
 # completes on main. On a Project.toml VERSION BUMP it branches by repo visibility:
 #   PUBLIC  → request General registration via a @JuliaRegistrator comment
 #             (→ JuliaTagBot → the repo's TagBot → PublishRelease).
-#   PRIVATE → push a vX.Y.Z tag (no registry) which fires the repo's PublishRelease.
-# Runs on ubuntu-latest: it's lightweight (git + one API call), and public repos cannot
-# use the private-only rosina pool anyway. The private tag is pushed with BOT_PAT so it
-# actually triggers PublishRelease (a GITHUB_TOKEN-pushed tag does not trigger workflows).
+#   PRIVATE → tag vX.Y.Z AND publish the GitHub Release, both HERE, in one step.
+# Runs on ubuntu-latest: lightweight (git + gh), and public repos cannot use the private
+# rosina pool anyway.
+#
+# Why private does the release itself (does NOT delegate to PublishRelease): an Action-pushed
+# tag does not reliably trigger the repo's PublishRelease — a GITHUB_TOKEN-pushed tag triggers
+# nothing, GitHub suppresses the push event when >3 tags are pushed at once, and PublishRelease
+# runs only on the (sometimes-unavailable) rosina pool. That fragility left a whole run of tags
+# (v0.4.11+) created but their releases stuck as unpublished drafts. Publishing here — on
+# ubuntu-latest, idempotently, even when the tag already exists — removes every one of those
+# dependencies. If the tag push happens to also trigger PublishRelease, that just re-edits an
+# already-published release (harmless).
 on:
   workflow_call:
     secrets:
@@ -26,6 +34,7 @@ jobs:
     permissions:
       contents: write
       issues: write
+      pull-requests: read   # build_release_notes.py does `gh pr list` for the changelog
     steps:
       - uses: actions/checkout@v4
         with:
@@ -56,15 +65,42 @@ jobs:
             -f body="$BODY"
           echo "Requested General registration for v${{ steps.v.outputs.curr }}"
 
-      - name: Private → tag vX.Y.Z (no registry; fires PublishRelease)
+      - name: Private → tag + publish GitHub Release (no registry)
         if: steps.v.outputs.changed == 'true' && github.event.repository.private == true
+        env:
+          GH_TOKEN: ${{ secrets.BOT_PAT || github.token }}
         run: |
+          set -eo pipefail
           TAG="v${{ steps.v.outputs.curr }}"
-          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q "$TAG"; then
-            echo "$TAG already exists — skip"; exit 0
+
+          # 1) tag (idempotent) — but do NOT stop if it already exists; still (re)publish below.
+          if ! git ls-remote --tags origin "refs/tags/$TAG" | grep -q "refs/tags/$TAG$"; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG" -m "Release $TAG" "${{ github.event.workflow_run.head_sha }}"
+            git push origin "$TAG"
+            echo "Pushed tag $TAG"
+          else
+            echo "Tag $TAG already exists — proceeding to (re)publish its release"
           fi
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "Release $TAG" "${{ github.event.workflow_run.head_sha }}"
-          git push origin "$TAG"
-          echo "Pushed $TAG — PublishRelease will publish the GitHub Release"
+
+          # 2) rich notes if the repo ships the script; else fall back to the Release Drafter
+          #    draft's own notes (leave notes unset) or auto-generated notes.
+          NOTES_ARGS=()
+          if [ -f .github/scripts/build_release_notes.py ]; then
+            if python3 .github/scripts/build_release_notes.py --tag "$TAG" > /tmp/notes.md 2>/tmp/notes.err; then
+              NOTES_ARGS=(--notes-file /tmp/notes.md)
+            else
+              echo "notes script failed; keeping the drafter/auto notes: $(cat /tmp/notes.err)"
+            fi
+          fi
+
+          # 3) publish: overwrite the Release Drafter draft if one exists, else create.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TAG" --draft=false "${NOTES_ARGS[@]}"
+          elif [ ${#NOTES_ARGS[@]} -gt 0 ]; then
+            gh release create "$TAG" --title "$TAG" "${NOTES_ARGS[@]}"
+          else
+            gh release create "$TAG" --title "$TAG" --generate-notes
+          fi
+          echo "Published release $TAG"
