@@ -54,16 +54,16 @@ jobs:
         run: |
           set -uo pipefail
           ME="${{ github.repository }}"; ORG="${ME%%/*}"; NAME="${ME##*/}"
-          echo "Fanning out to the direct lab dependents of $ME:"
+          echo "ME=$ME ORG=$ORG NAME=$NAME"
+          repos=$(gh repo list "$ORG" --limit 100 --json name,isArchived -q '.[] | select(.isArchived==false) | .name' 2>&1)
+          echo "gh repo list -> $(printf '%s' "$repos" | grep -c . ) repos"
           n=0
-          for r in $(gh repo list "$ORG" --limit 100 --json name,isArchived -q '.[] | select(.isArchived==false) | .name'); do
+          for r in $repos; do
             [ "$ORG/$r" = "$ME" ] && continue
             pt=$(gh api "repos/$ORG/$r/contents/Project.toml" --jq '.content' 2>/dev/null | base64 -d 2>/dev/null || true)
-            printf '%s' "$pt" | grep -qF "$ORG/$NAME" || continue          # not a direct dependent
-            if gh workflow run CI.yml --repo "$ORG/$r" --ref main 2>/dev/null; then
-              echo "  ✓ dispatched CI: $ORG/$r"; n=$((n+1))
-            else
-              echo "  ✗ could NOT dispatch CI: $ORG/$r (missing CI.yml / workflow_dispatch?)"
+            if printf '%s' "$pt" | grep -qF "$ORG/$NAME"; then
+              echo "  dependent: $r (Project.toml ${#pt}b)"
+              if gh workflow run CI.yml --repo "$ORG/$r" --ref main 2>&1; then echo "    dispatched"; n=$((n+1)); else echo "    dispatch FAILED"; fi
             fi
           done
-          echo "::notice::Dispatched $n downstream CI run(s) after a breaking bump of $ME — a failure surfaces in that repo's Actions."
+          echo "::notice::Dispatched $n downstream CI run(s)."
