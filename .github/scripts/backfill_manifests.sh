@@ -1,54 +1,57 @@
 #!/usr/bin/env bash
-# KEPT as the manifests recovery tool: `manifests` branches on PRIVATE repos cannot be
-# branch-protected on GitHub Free, so if one is ever deleted/rewritten, regenerate it with this
-# (deps are pinned to each release-time commit; going-forward snapshots are automatic via
-# manifest-snapshot.yml). Usage: bash backfill_manifests.sh <owner/repo>
-# backfill_manifests.sh <owner/repo>
-# Reconstruct PAST releases' Manifest.toml (internal git [sources] deps pinned to the commit that was
-# their main-HEAD at each release's time) and push to the `manifests` orphan branch. Registry deps
-# resolve to current (bounded by [compat]); transitive-internal deps are pinned only at the top level.
+# backfill_manifests.sh <owner/repo>  — reconstruct PAST releases' Manifest.toml with internal
+# git [sources] deps pinned to the commit that was their main-HEAD at each release's time, and push to
+# the `manifests` orphan branch. Robust: handles inline AND [sources.X] table format, and any github
+# owner (lab-sotashimozono OR personal), via a TOML-aware pinning pass. rev=<tag> sources are left as-is
+# (already pinned). Registry deps resolve to current (bounded by [compat]).
 set -uo pipefail
 REPO="$1"; ORG="${REPO%%/*}"
 export JULIA_PKG_PRECOMPILE_AUTO=0
 CLONE=$(mktemp -d); git clone -q "https://github.com/$REPO.git" "$CLONE"; cd "$CLONE"
-# existing manifests-branch versions (skip those)
 existing=""
 if git ls-remote --exit-code --heads origin manifests >/dev/null 2>&1; then
   git fetch -q --depth=1 origin manifests
   existing=$(git ls-tree -r --name-only FETCH_HEAD | grep -oE '^v[^/]+' | sort -u)
 fi
-tags=$(gh release list --repo "$REPO" --json tagName -q '.[].tagName' 2>/dev/null | grep -E '^v[0-9]' | sort -V)
+tags=$(gh release list --repo "$REPO" --json tagName,isDraft -q '.[]|select(.isDraft==false)|.tagName' 2>/dev/null | grep -E '^v[0-9]' | sort -V)
 [ -z "$tags" ] && { echo "no release tags"; exit 0; }
 declare -a NEWVERS=()
 for tag in $tags; do
   VER="${tag#v}"
-  if printf '%s\n' "$existing" | grep -qx "v$VER"; then echo "== $tag already snapshotted — skip"; continue; fi
+  printf '%s\n' "$existing" | grep -qx "v$VER" && { echo "== $tag already snapshotted — skip"; continue; }
   TS=$(gh api "repos/$REPO/commits/$tag" --jq '.commit.committer.date' 2>/dev/null)
   echo "== $tag (v$VER) @ $TS =="
   proj=$(mktemp -d)
-  git show "$tag:Project.toml" > "$proj/Project.toml" 2>/dev/null || { echo "  no Project.toml at $tag"; continue; }
-  # pin each internal (ORG) git [sources] dep to its main commit at TS
-  for url in $(grep -oE "https://github.com/$ORG/[A-Za-z0-9_.-]+\.jl" "$proj/Project.toml" | sort -u); do
-    dep="${url##*/}"
-    sha=$(gh api "repos/$ORG/$dep/commits?sha=main&until=$TS&per_page=1" --jq '.[0].sha' 2>/dev/null)
-    [ -z "$sha" ] && { echo "  WARN no $dep commit <= $TS"; continue; }
-    echo "  pin $dep -> ${sha:0:8}"
-    sed -i "s|\($dep\"[^}]*rev = \"\)main\"|\1$sha\"|" "$proj/Project.toml"
-  done
+  git show "$tag:Project.toml" > "$proj/Project.toml" 2>/dev/null || { echo "  no Project.toml"; continue; }
+  # TOML-aware pin: every [sources] entry with rev="main" -> its repo's commit at TS (any owner/format)
+  ( cd "$proj" && TS="$TS" julia --startup-file=no -e '
+      using TOML
+      ts = ENV["TS"]; p = TOML.parsefile("Project.toml")
+      srcs = get(p, "sources", nothing); srcs === nothing && exit(0)
+      for (name, s) in srcs
+        (s isa AbstractDict && get(s,"rev","")=="main" && haskey(s,"url")) || continue
+        m = match(r"github\.com[/:]([^/]+)/(.+?)(?:\.git)?$", strip(String(s["url"])))
+        m === nothing && continue
+        owner, repo = m.captures[1], m.captures[2]
+        u = "repos/$owner/$repo/commits?sha=main&until=$ts&per_page=1"
+        sha = strip(read(Cmd(["gh","api",u,"--jq",".[0].sha"]), String))
+        isempty(sha) && continue
+        s["rev"] = sha
+        println(stderr, "  pin $name ($owner/$repo) -> ", first(sha,8))
+      end
+      open(io->TOML.print(io,p), "Project.toml","w")
+    ' )
   ( cd "$proj" && rm -f Manifest.toml && timeout 400 julia --startup-file=no -e 'using Pkg; Pkg.activate("."); Pkg.instantiate()' >/dev/null 2>&1 )
   [ -f "$proj/Manifest.toml" ] || { echo "  FAILED to produce Manifest"; continue; }
-  mkdir -p "$CLONE/.mfsnap/v$VER"; cp "$proj/Manifest.toml" "$CLONE/.mfsnap/v$VER/Manifest.toml"
-  NEWVERS+=("v$VER")
+  mkdir -p "$CLONE/.mfsnap/v$VER"; cp "$proj/Manifest.toml" "$CLONE/.mfsnap/v$VER/Manifest.toml"; NEWVERS+=("v$VER")
   echo "  captured v$VER/Manifest.toml"
 done
-[ ${#NEWVERS[@]} -eq 0 ] && { echo "nothing new to snapshot"; exit 0; }
-# push all captured to the manifests branch
+[ ${#NEWVERS[@]} -eq 0 ] && { echo "nothing new"; exit 0; }
 work=$(mktemp -d); cd "$work"; git init -q
 git config user.name "github-actions[bot]"; git config user.email "github-actions[bot]@users.noreply.github.com"
-if git ls-remote --exit-code --heads "https://github.com/$REPO.git" manifests >/dev/null 2>&1; then
-  git fetch -q --depth=1 "https://github.com/$REPO.git" manifests && git checkout -q FETCH_HEAD
-fi
+git ls-remote --exit-code --heads "https://github.com/$REPO.git" manifests >/dev/null 2>&1 && \
+  { git fetch -q --depth=1 "https://github.com/$REPO.git" manifests && git checkout -q FETCH_HEAD; }
 for v in "${NEWVERS[@]}"; do mkdir -p "$v"; cp "$CLONE/.mfsnap/$v/Manifest.toml" "$v/Manifest.toml"; git add "$v/Manifest.toml"; done
-git commit -q -m "manifest: backfill snapshots for ${NEWVERS[*]} (deps pinned to release-time commits)"
+git commit -q -m "manifest: backfill ${NEWVERS[*]} (deps pinned to release-time commits, TOML-aware)"
 git push -q "https://github.com/$REPO.git" HEAD:manifests
-echo "pushed backfilled snapshots: ${NEWVERS[*]}"
+echo "pushed: ${NEWVERS[*]}"
