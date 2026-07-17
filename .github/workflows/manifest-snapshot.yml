@@ -57,7 +57,8 @@ jobs:
             git fetch -q --depth=1 "$REMOTE" manifests && git checkout -q FETCH_HEAD
           fi
           mkdir -p "v$VER"; cp "$M" "v$VER/Manifest.toml"
-          git add "v$VER/Manifest.toml"
+          echo "IyBSZWxlYXNlIGRlcGVuZGVuY3kgc25hcHNob3RzCgpFYWNoIGB2PHZlcnNpb24+L01hbmlmZXN0LnRvbWxgIGhlcmUgaXMgdGhlIGZ1bGx5LXJlc29sdmVkLCBjb21taXQtcGlubmVkIGRlcGVuZGVuY3kgc2V0IG9mIHRoYXQKcmVsZWFzZS4gSW50ZXJuYWwgZGVwcyB0cmFjayBgcmV2PSJtYWluImAgKHdoaWNoIGRvZXMgbm90IHBpbiBhIGNvbW1pdCk7IHRoaXMgYnJhbmNoIGRvZXMsIHZpYSBlYWNoCmRlcGVuZGVuY3kncyBleGFjdCBgZ2l0LXRyZWUtc2hhMWAuCgojIyBSZXN0b3JlIGEgcmVsZWFzZSdzIGV4YWN0IGRlcGVuZGVuY2llcwoKICAgIGdpdCBjaGVja291dCB2PHZlcnNpb24+CiAgICBnaXQgZmV0Y2ggb3JpZ2luIG1hbmlmZXN0cwogICAgZ2l0IHNob3cgb3JpZ2luL21hbmlmZXN0czp2PHZlcnNpb24+L01hbmlmZXN0LnRvbWwgPiBNYW5pZmVzdC50b21sCiAgICBqdWxpYSAtLXByb2plY3Q9LiAtZSAndXNpbmcgUGtnOyBQa2cuaW5zdGFudGlhdGUoKScKCkF1dG8tZ2VuZXJhdGVkIGJ5IHRoZSBNYW5pZmVzdFNuYXBzaG90IHdvcmtmbG93IG9uIGV2ZXJ5IHZlcnNpb24gYnVtcC4KRnVsbCBub3RlczogbGFiLXNvdGFzaGltb3pvbm8vLmdpdGh1YiDihpIgUkVMRUFTRV9SRVBST0RVQ0lCSUxJVFkubWQK" | base64 -d > README.md
+          git add README.md "v$VER/Manifest.toml"
           if git diff --cached --quiet; then echo "v$VER/Manifest.toml unchanged - nothing to commit"; exit 0; fi
           git commit -q -m "manifest: snapshot for v$VER (${{ github.sha }})"
           git push -q "$REMOTE" HEAD:manifests
