@@ -1,0 +1,66 @@
+name: Downstream CI
+
+# Reusable. When a lab package makes a BREAKING version bump on main — for a 0.x package a MINOR bump,
+# for a >=1.0 package a MAJOR bump — find the lab-sotashimozono repos whose Project.toml `[sources]`
+# DIRECTLY depend on it and trigger THEIR CI (workflow_dispatch), so breakage is caught immediately.
+# Internal deps track rev="main" (which CompatHelper cannot see). DIRECT dependents only + dispatching
+# CI.yml (which does not bump a version) => cannot loop, even on circular deps. Fire-and-forget: a
+# failing downstream run surfaces in that repo's own Actions tab + failure notifications. A manual
+# workflow_dispatch on the caller forces the fan-out (skips the version check) for testing.
+
+on:
+  workflow_call:
+    secrets:
+      BOT_PAT:
+        required: true
+
+jobs:
+  downstream:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Decide whether to fan out
+        id: gate
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+            echo "manual dispatch - forcing the downstream fan-out"; exit 0
+          fi
+          PREV=$(git show HEAD~1:Project.toml 2>/dev/null | grep '^version' | head -1 | sed 's/.*"\(.*\)"/\1/' || echo "")
+          CURR=$(grep '^version' Project.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          go=false
+          if [ -n "$PREV" ] && [ "$PREV" != "$CURR" ]; then
+            IFS=. read -r pM pm _ <<< "$PREV"
+            IFS=. read -r cM cm _ <<< "$CURR"
+            if   [ "${cM:-0}" -gt "${pM:-0}" ]; then go=true
+            elif [ "$cM" = "$pM" ] && [ "$pM" = "0" ] && [ "${cm:-0}" -gt "${pm:-0}" ]; then go=true
+            fi
+          fi
+          echo "go=$go" >> "$GITHUB_OUTPUT"
+          echo "version: ${PREV:-none} -> $CURR  (breaking=$go)"
+
+      - name: Trigger the CI of direct dependents
+        if: steps.gate.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.BOT_PAT }}
+        run: |
+          set +e
+          ME="${{ github.repository }}"; ORG="${ME%%/*}"; NAME="${ME##*/}"
+          repos=$(gh api "orgs/$ORG/repos?per_page=100&type=all" --paginate --jq '.[] | select(.archived==false) | .name' 2>&1)
+          rc=$?
+          echo "repo list rc=$rc count=$(printf '%s\n' "$repos" | grep -c .)"
+          if [ $rc -ne 0 ]; then echo "::error::cannot list org repos: $(printf '%s' "$repos" | head -c 200)"; exit 1; fi
+          n=0
+          for r in $repos; do
+            [ "$ORG/$r" = "$ME" ] && continue
+            pt=$(gh api "repos/$ORG/$r/contents/Project.toml" --jq '.content' 2>/dev/null | base64 -d 2>/dev/null)
+            printf '%s' "$pt" | grep -qF "$ORG/$NAME" || continue
+            echo "  dependent: $r"
+            if gh workflow run CI.yml --repo "$ORG/$r" --ref main 2>&1; then echo "    dispatched"; n=$((n+1)); else echo "    dispatch FAILED"; fi
+          done
+          echo "::notice::Dispatched $n downstream CI run(s)."
