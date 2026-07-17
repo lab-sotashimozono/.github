@@ -1,0 +1,64 @@
+name: Manifest snapshot
+
+# Reusable. On a version bump on main (a release), resolve the project on rosina (only it can fetch the
+# private git [sources] deps) so every dependency - including the internal rev="main" ones - is pinned by
+# its exact git-tree-sha1, and commit the resulting Manifest.toml to the `manifests` orphan branch at
+# v<version>/Manifest.toml. rev="main" does not pin, so THIS is what makes a release reproducible:
+#   git fetch origin manifests && git show origin/manifests:v<version>/Manifest.toml > Manifest.toml
+#   julia --project=. -e 'using Pkg; Pkg.instantiate()'   # restores the exact upstream commits
+# Own-repo push uses GITHUB_TOKEN (no BOT_PAT). A manual workflow_dispatch on the caller forces a snapshot
+# of the current version (for testing).
+
+on:
+  workflow_call: {}
+
+jobs:
+  snapshot:
+    runs-on: [self-hosted, rosina]
+    permissions:
+      contents: write   # push to the `manifests` orphan branch
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Version-bump gate
+        id: v
+        run: |
+          set -euo pipefail
+          CURR=$(grep '^version' Project.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          echo "curr=$CURR" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"; echo "manual dispatch (v$CURR)"; exit 0
+          fi
+          PREV=$(git show HEAD~1:Project.toml 2>/dev/null | grep '^version' | head -1 | sed 's/.*"\(.*\)"/\1/' || echo "")
+          if [ -n "$CURR" ] && [ "$PREV" != "$CURR" ]; then echo "go=true" >> "$GITHUB_OUTPUT"; else echo "go=false" >> "$GITHUB_OUTPUT"; fi
+          echo "version ${PREV:-none} -> $CURR"
+
+      - uses: julia-actions/setup-julia@v2
+        if: steps.v.outputs.go == 'true'
+        with:
+          version: '1'
+
+      - name: Resolve + snapshot Manifest to the manifests branch
+        if: steps.v.outputs.go == 'true'
+        run: |
+          set -euo pipefail
+          VER="${{ steps.v.outputs.curr }}"
+          rm -f Manifest.toml
+          julia --project=. -e 'using Pkg; Pkg.instantiate()'
+          if [ ! -f Manifest.toml ]; then echo "::warning::no Manifest.toml produced - skipping"; exit 0; fi
+          M=$(mktemp); cp Manifest.toml "$M"
+          REMOTE="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          work=$(mktemp -d); cd "$work"; git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads "$REMOTE" manifests >/dev/null 2>&1; then
+            git fetch -q --depth=1 "$REMOTE" manifests && git checkout -q FETCH_HEAD
+          fi
+          mkdir -p "v$VER"; cp "$M" "v$VER/Manifest.toml"
+          git add "v$VER/Manifest.toml"
+          if git diff --cached --quiet; then echo "v$VER/Manifest.toml unchanged - nothing to commit"; exit 0; fi
+          git commit -q -m "manifest: snapshot for v$VER (${{ github.sha }})"
+          git push -q "$REMOTE" HEAD:manifests
+          echo "snapshotted v$VER/Manifest.toml to the manifests branch"
