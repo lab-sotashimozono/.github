@@ -87,18 +87,35 @@ jobs:
             echo "Tag $TAG already exists — proceeding to (re)publish its release"
           fi
 
-          # 2) rich notes if the repo ships the script; else fall back to the Release Drafter
-          #    draft's own notes (leave notes unset) or auto-generated notes.
-          NOTES_ARGS=()
-          if [ -f .github/scripts/build_release_notes.py ]; then
-            if python3 .github/scripts/build_release_notes.py --tag "$TAG" > /tmp/notes.md 2>/tmp/notes.err; then
-              NOTES_ARGS=(--notes-file /tmp/notes.md)
-            else
-              echo "notes script failed; keeping the drafter/auto notes: $(cat /tmp/notes.err)"
-            fi
+          # 2) Build release notes, guaranteeing they are never empty.
+          #    Prefer the repo's rich notes script. It lists PRs via the SEARCH API, which the
+          #    ephemeral GITHUB_TOKEN cannot use on a PRIVATE repo — and on the Free plan the org
+          #    BOT_PAT is NOT delivered to private repos, so `secrets.BOT_PAT` is empty here. The
+          #    script then emits "No merged pull requests" (exit 0), which previously got published
+          #    as-is. So: use the rich notes only when they are non-empty AND not that placeholder;
+          #    otherwise fall back to GitHub's server-side generated notes. Those are composed
+          #    server-side from the merged PRs, so they work with GITHUB_TOKEN's contents:write and
+          #    need neither a PAT nor the (token-gated, eventually-consistent) search index.
+          NOTES_FILE=/tmp/release-notes.md
+          have_notes=false
+          if [ -f .github/scripts/build_release_notes.py ] \
+             && python3 .github/scripts/build_release_notes.py --tag "$TAG" >"$NOTES_FILE" 2>/tmp/notes.err \
+             && [ -s "$NOTES_FILE" ] \
+             && ! grep -q "No merged pull requests" "$NOTES_FILE"; then
+            have_notes=true
+            echo "Using rich notes from build_release_notes.py"
+          elif gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+                 -f tag_name="$TAG" --jq '.body' >"$NOTES_FILE" 2>/tmp/notes.err \
+               && [ -s "$NOTES_FILE" ]; then
+            have_notes=true
+            echo "Using GitHub server-side generated notes"
+          else
+            echo "Could not build release notes: $(cat /tmp/notes.err 2>/dev/null)"
           fi
 
           # 3) publish: overwrite the Release Drafter draft if one exists, else create.
+          NOTES_ARGS=()
+          if [ "$have_notes" = true ]; then NOTES_ARGS=(--notes-file "$NOTES_FILE"); fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --title "$TAG" --draft=false "${NOTES_ARGS[@]}"
           elif [ ${#NOTES_ARGS[@]} -gt 0 ]; then
