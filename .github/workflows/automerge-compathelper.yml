@@ -1,0 +1,56 @@
+name: AutoMerge CompatHelper
+
+# Reusable — merges a CompatHelper `[compat]` bump PR *only after its CI is green*.
+#
+# Why a CI-completion chain instead of GitHub native auto-merge (`gh pr merge --auto`):
+# native auto-merge only waits for CI when the branch has a protection rule with a
+# REQUIRED status check. Branch protection is unavailable on Free-plan PRIVATE repos
+# ("Upgrade to GitHub Pro"), and is not configured on the public ones either — so
+# `--auto` would merge as soon as the PR is conflict-free, WITHOUT waiting for CI.
+# Instead the caller fires this on `workflow_run` (CI) `completed`, and only when
+# `conclusion == 'success'`, so the gate is the actual CI result.
+#
+# PREREQUISITE (private repos): the CompatHelper PR must be authored by BOT_PAT so it
+# triggers CI at all — a `github.token`-authored PR triggers no workflows (see the
+# `free-plan-org-secrets-private-repos` note). On Free, org secrets do not reach private
+# repos, so BOT_PAT must be set as a REPO-level secret there. Public repos already
+# receive the org BOT_PAT, so their CompatHelper CI runs and this chain fires as-is.
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: '"ubuntu-latest"'
+      head_branch:
+        description: Head branch of the CI run that just completed (compathelper/*).
+        type: string
+        required: true
+      merge_method:
+        description: squash | merge | rebase
+        type: string
+        default: squash
+
+jobs:
+  merge:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Merge the green CompatHelper PR
+        env:
+          # BOT_PAT (if delivered) merges as a real user; else github.token merges fine too.
+          GH_TOKEN: ${{ secrets.BOT_PAT || github.token }}
+          HEAD: ${{ inputs.head_branch }}
+          METHOD: ${{ inputs.merge_method }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          num=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$HEAD" --state open \
+                  --json number --jq '.[0].number // empty')
+          if [ -z "$num" ]; then
+            echo "No open PR for branch '$HEAD' — nothing to merge."
+            exit 0
+          fi
+          echo "CI green for '$HEAD' → merging PR #$num via --$METHOD"
+          gh pr merge "$num" --repo "$GITHUB_REPOSITORY" --"$METHOD" --delete-branch
