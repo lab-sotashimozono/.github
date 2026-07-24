@@ -1,25 +1,18 @@
 name: CompatHelper
 
 # Reusable CompatHelper — opens `[compat]` bump PRs.
-#
-# Why this exists as a reusable: the per-repo CompatHelper workflows tried to reuse a juliaup
-# already on the rosina runner and failed with **exit 127 (`julia: command not found`)** — the
-# runner's PATH does not carry `~/.juliaup/bin` into a job. This one always runs
-# `julia-actions/setup-julia`, which works on rosina and on hosted alike.
-#
-# `runner`: private → '["self-hosted","rosina"]' (fleet policy: private CI burns no hosted
-# minutes — CompatHelper runs DAILY, so 15 private repos on hosted would eat the free tier),
-# public → '"ubuntu-latest"'.
-#
-# The PR is authored with **BOT_PAT** (org secret, visibility=all, via `secrets: inherit`) so it
-# actually triggers the repo's CI — a GITHUB_TOKEN-authored PR does not.
+# PR-authoring token precedence (resolved locally in the step; never written to output/env):
+#   1. BOT_PAT (org secret) — delivered to PUBLIC repos on Free.
+#   2. self-hosted runner's `gh auth token` — the SAME login CI uses to clone private
+#      lab-sotashimozono [sources] deps; gives PRIVATE repos a CI-triggering PR author with
+#      no repo secret. A PAT-authored PR triggers CI; github.token does not.
+#   3. github.token — last resort (PR opens but does NOT trigger CI / auto-merge).
 on:
   workflow_call:
     inputs:
       runner:
         type: string
         default: '"ubuntu-latest"'
-
 jobs:
   compathelper:
     runs-on: ${{ fromJSON(inputs.runner) }}
@@ -27,15 +20,21 @@ jobs:
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1'
-      # One step: a temp env does not survive between `julia -e` invocations, and a temp env is
-      # what keeps the runner's shared depot from capping the resolve (same lesson as format-check).
       - name: Run CompatHelper
-        shell: julia --color=yes {0}
-        run: |
-          using Pkg
-          Pkg.activate(; temp = true)
-          Pkg.add("CompatHelper")
-          using CompatHelper
-          CompatHelper.main()
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.BOT_PAT || github.token }}
+          BOT_PAT: ${{ secrets.BOT_PAT }}
+          FALLBACK: ${{ github.token }}
+        run: |
+          cred="$BOT_PAT"
+          if [ -z "$cred" ] && command -v gh >/dev/null 2>&1; then
+            cred="$(gh auth token 2>/dev/null || true)"
+          fi
+          [ -z "$cred" ] && cred="$FALLBACK"
+          echo "::add-mask::$cred"
+          GITHUB_TOKEN="$cred" julia --color=yes -e '
+            using Pkg
+            Pkg.activate(; temp = true)
+            Pkg.add("CompatHelper")
+            using CompatHelper
+            CompatHelper.main()'
