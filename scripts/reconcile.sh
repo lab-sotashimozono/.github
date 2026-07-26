@@ -117,9 +117,14 @@ for repo in "${REPOS[@]}"; do
   #    already receives the org secret directly, and writing a copy would only add drift.
   if [ "$private" = true ] && [ "${#DISTRIBUTABLE[@]}" -gt 0 ]; then
     for name in "${DISTRIBUTABLE[@]}"; do
+      # Value goes in on STDIN, never as an argument: `--body "$value"` would put the secret
+      # in the process's argv, readable from /proc by anything else on the runner. gh reads
+      # the value from stdin when --body is omitted. Nothing here ever prints the value —
+      # only its name and the outcome — and a secret is write-only once stored, so it stays a
+      # black box end to end.
       if [ -n "$DRY_RUN" ]; then
         say "   secret $name WOULD be set"
-      elif gh secret set "$name" --repo "$ORG/$repo" --body "${!name}" >/dev/null 2>&1; then
+      elif printf '%s' "${!name}" | gh secret set "$name" --repo "$ORG/$repo" >/dev/null 2>&1; then
         say "   secret $name set"
       else
         say "   secret $name FAILED"

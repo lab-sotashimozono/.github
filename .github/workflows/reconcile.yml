@@ -54,22 +54,22 @@ jobs:
 
       - name: Preflight — is BOT_PAT usable?
         env:
-          BOT_PAT: ${{ secrets.BOT_PAT }}
+          # Passed to gh through the ENVIRONMENT, never as an argument. A token in argv is
+          # world-readable via /proc/<pid>/cmdline; /proc/<pid>/environ is owner-only. The
+          # value is never printed either — only whether it works, and its scopes.
+          GH_TOKEN: ${{ secrets.BOT_PAT }}
         run: |
-          set -euo pipefail
-          if [ -z "${BOT_PAT}" ]; then
+          set -uo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
             echo "::error::BOT_PAT is not set at the org level (or is not visible here)."
             echo "Add it as an organization Actions secret with visibility=all."
             exit 1
           fi
-          code=$(curl -sS -o /dev/null -w '%{http_code}' \
-                   -H "Authorization: Bearer $BOT_PAT" https://api.github.com/user)
-          if [ "$code" != 200 ]; then
-            echo "::error::BOT_PAT is rejected by the API (HTTP $code) — expired or revoked."
+          if ! gh api user >/dev/null 2>&1; then
+            echo "::error::BOT_PAT is rejected by the API — expired or revoked."
             exit 1
           fi
-          scopes=$(curl -sS -I -H "Authorization: Bearer $BOT_PAT" https://api.github.com/user \
-                   | tr -d '\r' | sed -n 's/^[Xx]-[Oo][Aa]uth-[Ss]copes: //p')
+          scopes=$(gh api -i user 2>/dev/null | tr -d '\r' | sed -n 's/^[Xx]-[Oo][Aa]uth-[Ss]copes: //p')
           echo "BOT_PAT scopes: ${scopes:-<fine-grained>}"
           case "$scopes" in
             *repo*) ;;
