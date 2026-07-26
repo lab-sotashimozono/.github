@@ -1,0 +1,108 @@
+name: Reconcile repos
+
+# Applies the org's per-repo settings and distributes the org secrets, so a repository created
+# minutes ago works without anyone remembering a checklist.
+#
+# WHY THIS LIVES HERE, and only here: on the Free plan organization Actions secrets are
+# delivered to PUBLIC repositories only. Measured 2026-07-26 — in public `.github` BOT_PAT is
+# 40 chars; in private `skeleton.jl` BOT_PAT and CODECOV_TOKEN are both length 0. `.github` is
+# the org's only public repo, so it is the one place a workflow can read an org secret and hand
+# it onward. That is not a convenience here, it is the mechanism.
+#
+# Consequence worth knowing: `secrets: inherit` in a PRIVATE repo passes an EMPTY string. Any
+# step that authored something "as BOT_PAT" was silently falling back to github.token — which
+# is why BOT_PAT-authored PRs and tags did not trigger downstream workflows. Distributing the
+# secret into each private repo (step 3 of reconcile.sh) is what actually fixes that.
+#
+# Runs on ubuntu-latest: it must never touch the private rosina pool with an admin token.
+
+on:
+  schedule:
+    - cron: '17 3 * * *'      # daily; the safety net
+  workflow_dispatch:           # immediate — use this right after creating a repository
+    inputs:
+      repos:
+        description: 'Space-separated repo names, or empty for every repo in the org'
+        type: string
+        required: false
+        default: ''
+      dry-run:
+        description: 'Report what would change without changing anything'
+        type: boolean
+        required: false
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/reconcile.sh'
+      - 'scripts/apply-ruleset.sh'
+      - 'rulesets/protect-default.json'
+      - '.github/workflows/reconcile.yml'
+
+permissions: {}   # everything cross-repo goes through BOT_PAT, never GITHUB_TOKEN
+
+concurrency:
+  group: reconcile-repos
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    name: Reconcile org repositories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preflight — is BOT_PAT usable?
+        env:
+          BOT_PAT: ${{ secrets.BOT_PAT }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BOT_PAT}" ]; then
+            echo "::error::BOT_PAT is not set at the org level (or is not visible here)."
+            echo "Add it as an organization Actions secret with visibility=all."
+            exit 1
+          fi
+          code=$(curl -sS -o /dev/null -w '%{http_code}' \
+                   -H "Authorization: Bearer $BOT_PAT" https://api.github.com/user)
+          if [ "$code" != 200 ]; then
+            echo "::error::BOT_PAT is rejected by the API (HTTP $code) — expired or revoked."
+            exit 1
+          fi
+          scopes=$(curl -sS -I -H "Authorization: Bearer $BOT_PAT" https://api.github.com/user \
+                   | tr -d '\r' | sed -n 's/^[Xx]-[Oo][Aa]uth-[Ss]copes: //p')
+          echo "BOT_PAT scopes: ${scopes:-<fine-grained>}"
+          case "$scopes" in
+            *repo*) ;;
+            *) echo "::warning::BOT_PAT lacks the 'repo' scope — settings and secret writes will fail." ;;
+          esac
+          case "$scopes" in
+            *workflow*) ;;
+            *) echo "::notice::BOT_PAT lacks the 'workflow' scope, so this job cannot stamp caller workflows into repos. That step stays local: scripts/init-repo.sh" ;;
+          esac
+
+      - name: Reconcile
+        env:
+          # gh CLI acts as BOT_PAT — GITHUB_TOKEN cannot reach another repository.
+          GH_TOKEN: ${{ secrets.BOT_PAT }}
+          # Distributed into every PRIVATE repo as a repository secret (see the header).
+          # reconcile.sh refuses to distribute an implausibly short value, so a placeholder
+          # is reported instead of being copied across the fleet.
+          BOT_PAT: ${{ secrets.BOT_PAT }}
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+          DRY_RUN: ${{ inputs.dry-run && '1' || '' }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/reconcile.sh scripts/apply-ruleset.sh
+          # shellcheck disable=SC2086 — word splitting is the intent for a space-separated list
+          scripts/reconcile.sh ${{ inputs.repos }} | tee reconcile.log
+
+      - name: Publish summary
+        if: always()
+        run: |
+          {
+            echo '### Reconcile'
+            echo
+            echo '```'
+            cat reconcile.log 2>/dev/null || echo '(no output — the job failed before reconciling)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

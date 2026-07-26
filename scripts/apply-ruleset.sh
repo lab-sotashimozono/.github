@@ -22,6 +22,13 @@ fi
 
 ID=$(gh api "/repos/$ORG/$REPO/rulesets" --jq ".[] | select(.name==\"$NAME\") | .id" 2>/dev/null || true)
 
+# DRY_RUN must mean "change nothing" for the caller too — a PUT of identical content is
+# idempotent, but reporting it as a dry run while performing it is a lie the caller acts on.
+if [ -n "${DRY_RUN:-}" ]; then
+  [ -n "${ID:-}" ] && echo "   ruleset WOULD be updated (id=$ID)" || echo "   ruleset WOULD be created"
+  exit 0
+fi
+
 if [ -n "${ID:-}" ]; then
   gh api -X PUT "/repos/$ORG/$REPO/rulesets/$ID" --input "$FILE" >/dev/null && echo "   ruleset updated (id=$ID)"
 else
