@@ -35,24 +35,60 @@ run a hosted OS/version matrix). Each repo keeps its own `CI.yml`. Don't try to 
   arbitrary code on rosina. Hard-enforced — the `Rosina` group has *Allow public repositories*
   **off**, so a public repo cannot reach the pool even if a workflow asks for it.
 
-## Secrets
+## Secrets — the Free-plan trap (measured, not guessed)
 
-`BOT_PAT` is an **org** Actions secret with `visibility=all`, so every repo — private included —
-gets it through `secrets: inherit`. It is what makes CompatHelper PRs and private release tags
-trigger downstream workflows (a `GITHUB_TOKEN`-authored PR/tag does not).
+**Organization Actions secrets are delivered to PUBLIC repositories only.** Probed 2026-07-26 by
+printing secret *lengths* in both kinds of repo:
+
+| repo | visibility | `BOT_PAT` | `CODECOV_TOKEN` |
+|---|---|---|---|
+| `.github` | public | **40** | 1 |
+| `skeleton.jl` | private | **0** | **0** |
+
+So `secrets: inherit` hands a **private** repo an **empty string**, and every step that meant to
+author something "as BOT_PAT" silently fell back to `github.token` — which is precisely why
+BOT_PAT-authored PRs and private release tags were not triggering downstream workflows. The token
+was never empty (it is a real 40-char PAT, scope `repo`); it was never *delivered*.
+
+Two consequences the rest of this repo is built around:
+
+1. **`.github` is the org's only public repo, so it is the only place a workflow can read an org
+   secret.** That is what makes `Reconcile repos` (below) possible at all.
+2. **Every private repo needs its own copy** of each secret. `reconcile.sh` writes them, so this
+   is maintained rather than remembered.
+
+> `CODECOV_TOKEN` at the org level is currently a **1-character placeholder**, so it is refused
+> for distribution (`MIN_SECRET_LEN`) rather than copied across the fleet. Set it to the real
+> Codecov org upload token and the next reconcile propagates it. Until then each private repo
+> needs its own `CODECOV_TOKEN`, which is why they already have one.
 
 ## Initialize / reconcile
 
-Run as an **org admin**:
+Automatic: **`Reconcile repos`** (`.github/workflows/reconcile.yml`) runs daily, and on demand via
+**Actions ▸ Reconcile repos ▸ Run workflow** — use that right after creating a repository, with
+`dry-run` first if you want to see the diff. Repos are **discovered from the org API**, so a
+repository created five minutes ago is picked up with no manifest edit.
+
+Same thing locally, as an **org admin**:
 
 ```bash
-scripts/setup.sh                 # every repo in repos.tsv
-scripts/setup.sh ITensorAD.jl    # just one
+scripts/setup.sh                              # every repo in the org
+scripts/setup.sh ITensorAD.jl                 # just one
+DRY_RUN=1 scripts/setup.sh                    # report only
+BOT_PAT=… CODECOV_TOKEN=… scripts/setup.sh    # also distribute secrets (see above)
 ```
 
-Idempotent and declarative: reads `repos.tsv`, applies each repo's branch-protection ruleset, and
-reports which repos still need the org workflows. To onboard a repo: add a line to `repos.tsv`,
-rerun `setup.sh`, then stamp its workflows once:
+`setup.sh` is a thin wrapper over `scripts/reconcile.sh`, which the workflow runs verbatim — one
+implementation, so the automated pass and your local pass cannot drift.
+
+Per repo it reconciles: **auto-merge on**, **Actions access = organization** (private), **org
+secrets distributed** (private), **branch-protection ruleset** (plan-gated, see below), and
+reports two health facts — repos still carrying the template placeholder, and repos that have not
+adopted the org caller workflows.
+
+**Stamping the caller workflows stays local.** It pushes files under `.github/workflows/`, which
+needs a token with the `workflow` scope; BOT_PAT has `repo` only, so the workflow cannot do it and
+says so instead of failing silently:
 
 ```bash
 scripts/init-repo.sh <repo> <public|private>   # opens a chore/adopt-org-workflows PR
@@ -78,16 +114,30 @@ would have made it advisory for you anyway).
 ## Layout
 
 ```
-repos.tsv                              declarative repo manifest (name + visibility)
+repos.tsv                              repo manifest — documentation of intent; reconcile
+                                       discovers repos from the org API instead
 profile/README.md                      org profile (public landing)
+.github/workflows/reconcile.yml        settings + secret distribution (daily / on demand)
+.github/workflows/template-bootstrap.yml  reusable: initialize a repo made from skeleton.jl
 .github/workflows/format-check.yml     reusable: JuliaFormatter v2
 .github/workflows/compathelper.yml     reusable: [compat] bump PRs
 .github/workflows/autoregister.yml     reusable: register (public) / tag (private)
 .github/workflows/documentation.yml    reusable: Documenter build/deploy/preview (target: gh-pages | path)
 .github/workflows/docs-cleanup-preview.yml  reusable: tear a PR preview down
 rulesets/protect-default.json          branch-protection ruleset
-scripts/setup.sh                       idempotent org init (run this)
+scripts/reconcile.sh                   THE implementation (workflow + setup.sh both run it)
+scripts/setup.sh                       thin local wrapper over reconcile.sh (run this)
 scripts/apply-ruleset.sh <repo>        create/update one repo's ruleset
-scripts/init-repo.sh <repo> <vis>      stamp the org workflows into a repo
+scripts/init-repo.sh <repo> <vis>      stamp the org workflows into a repo (needs `workflow` scope)
 templates/                             the per-repo caller files init-repo.sh copies
 ```
+
+## Creating a new package repository
+
+1. **Use this template** on `skeleton.jl`.
+2. Nothing else — `Template bootstrap` renames the placeholder module after the repository,
+   assigns a **fresh UUID** (without which every generated package shares the template's UUID and
+   they collide), and sets the version to 0.1.0 on the first push to `main`.
+3. **Actions ▸ Reconcile repos ▸ Run workflow** for the settings and secrets immediately,
+   or leave it to the daily pass.
+4. Once, locally: `scripts/init-repo.sh <repo> <public|private>` for the caller workflows.
