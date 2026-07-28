@@ -6,6 +6,9 @@
 #   FormatCheck.yml   → reusable format-check (JuliaFormatter v2; rosina for private)
 #   CompatHelper.yml  → reusable compathelper (BOT_PAT-authored PRs, so CI triggers)
 #   AutoRegister.yml  → reusable autoregister (public → @JuliaRegistrator / private → tag)
+#   PRLabeler.yml     → reusable labeler, hosted in QAtlasHub/.github (ONE implementation for
+#                       both orgs — the per-repo hand-rolled `gh pr edit` version is what the
+#                       Projects-classic sunset broke in 40 repos at once on 2026-07-28)
 #   dependabot.yml    → weekly GitHub-Actions bumps
 #
 # NOT stamped: the test CI. It is genuinely per-repo (rosina juliaup + throwaway test env
@@ -30,10 +33,11 @@ mkdir -p .github/workflows
 cp "$TPL/FormatCheck.$VIS.yml" .github/workflows/FormatCheck.yml
 cp "$TPL/CompatHelper.$VIS.yml" .github/workflows/CompatHelper.yml
 cp "$TPL/AutoRegister.yml"     .github/workflows/AutoRegister.yml
+cp "$TPL/PRLabeler.$VIS.yml"   .github/workflows/PRLabeler.yml
 cp "$TPL/dependabot.yml"       .github/dependabot.yml
 
 git add .github
-git commit -m "ci: adopt lab org reusable workflows (format-check, compathelper, autoregister)"
+git commit -m "ci: adopt lab org reusable workflows (format-check, compathelper, autoregister, labeler)"
 git push -u origin chore/adopt-org-workflows
 gh pr create --base main --fill
 echo "Opened org-workflow adoption PR for $ORG/$REPO ($VIS)"
