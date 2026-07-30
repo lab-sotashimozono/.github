@@ -10,6 +10,23 @@ name: CleanupPreview
 #
 # Deleting nothing is not an error: a PR that never built docs has no preview, and saying so is the
 # correct outcome.
+#
+# `mode` decides WHICH previews are considered:
+#
+#   event  the closing PR's preview only (default; this is the `pull_request: closed` behaviour).
+#   sweep  every `previews/PR<n>` whose PR the API reports CLOSED or MERGED.
+#
+# WHY SWEEP EXISTS. `event` cannot remove a preview that was ALREADY orphaned — it only ever fires
+# on `pull_request: closed`, so anything left behind before the workflow existed, by a run that
+# failed, or by a preview published after the cleanup ran, stays forever. Measured on one repo:
+# sixteen such directories, 40.6 MB, a third of the branch. `sweep` states the same job as an
+# INVARIANT — "no preview outlives its pull request" — so a caller that schedules it is
+# self-healing: a missed `event` costs one period of one directory instead of forever.
+#
+# FAIL-SAFE DIRECTION IN `sweep`. A directory is removed only when the API POSITIVELY reports CLOSED
+# or MERGED. Anything else — OPEN, a transient API failure, an empty answer, a name that is not
+# `PR<digits>` — is KEPT. Inverting that would delete a live preview on a network blip, so the
+# default is always "keep".
 
 on:
   workflow_call:
@@ -26,6 +43,10 @@ on:
         description: "target='path': the same site root documentation.yml published to"
         type: string
         default: ''
+      mode:
+        description: "'event' (the closing PR's preview) or 'sweep' (every preview whose PR is closed)"
+        type: string
+        default: 'event'
 
 jobs:
   cleanup:
@@ -37,7 +58,7 @@ jobs:
           ref: gh-pages
 
       - name: Remove the preview from gh-pages
-        if: ${{ inputs.target == 'gh-pages' }}
+        if: ${{ inputs.target == 'gh-pages' && inputs.mode == 'event' }}
         run: |
           set -euo pipefail
           dir="previews/PR${{ github.event.pull_request.number }}"
@@ -52,7 +73,7 @@ jobs:
           fi
 
       - name: Remove the preview from the runner directory
-        if: ${{ inputs.target == 'path' }}
+        if: ${{ inputs.target == 'path' && inputs.mode == 'event' }}
         run: |
           set -euo pipefail
           dest='${{ inputs.path-dest }}'
@@ -71,3 +92,63 @@ jobs:
           else
             echo "no preview directory to remove"
           fi
+
+      - name: Sweep every orphaned preview from gh-pages
+        if: ${{ inputs.target == 'gh-pages' && inputs.mode == 'sweep' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          removed=0; kept=0
+          for dir in previews/PR*; do
+            [ -d "$dir" ] || continue
+            num="${dir#previews/PR}"
+            case "$num" in
+              ''|*[!0-9]*) echo "keep   $dir  (not previews/PR<digits>)"; kept=$((kept+1)); continue ;;
+            esac
+            # `|| true` so one failed lookup cannot abort the sweep under `set -e`; an empty answer
+            # then falls through to the keep branch, which is the safe direction.
+            state="$(gh pr view "$num" --repo "$GITHUB_REPOSITORY" --json state --jq .state 2>/dev/null || true)"
+            case "$state" in
+              CLOSED|MERGED) git rm -rq "$dir"; echo "remove $dir  (PR #$num is $state)"; removed=$((removed+1)) ;;
+              *) echo "keep   $dir  (PR #$num reported '${state:-<no answer>}')"; kept=$((kept+1)) ;;
+            esac
+          done
+          echo "--- pruned $removed, kept $kept ---"
+          [ "$removed" -eq 0 ] && { echo "nothing to do"; exit 0; }
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -qm "chore(docs): prune $removed orphaned docs preview(s)"
+          git push
+
+      - name: Sweep every orphaned preview from the runner directory
+        if: ${{ inputs.target == 'path' && inputs.mode == 'sweep' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          dest='${{ inputs.path-dest }}'
+          if [ -z "$dest" ]; then
+            echo "::error::target='path' requires path-dest"
+            exit 1
+          fi
+          removed=0; kept=0
+          for dir in "$dest"/previews/PR*; do
+            [ -d "$dir" ] || continue
+            case "$dir" in
+              */previews/PR[0-9]*) ;;                     # refuse to rm -rf anything but a preview dir
+              *) echo "keep   $dir  (refusing: not a preview path)"; kept=$((kept+1)); continue ;;
+            esac
+            num="${dir##*/previews/PR}"
+            case "$num" in
+              ''|*[!0-9]*) echo "keep   $dir  (not previews/PR<digits>)"; kept=$((kept+1)); continue ;;
+            esac
+            state="$(gh pr view "$num" --repo "$GITHUB_REPOSITORY" --json state --jq .state 2>/dev/null || true)"
+            case "$state" in
+              CLOSED|MERGED) rm -rf "$dir"; echo "remove $dir  (PR #$num is $state)"; removed=$((removed+1)) ;;
+              *) echo "keep   $dir  (PR #$num reported '${state:-<no answer>}')"; kept=$((kept+1)) ;;
+            esac
+          done
+          echo "--- pruned $removed, kept $kept ---"
