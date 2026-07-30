@@ -1,0 +1,29 @@
+# Lints THIS hub's own workflows. It had none — the hub that publishes reusables for 25+ repos was
+# the one repository whose workflows nothing checked, and `documentation.yml` (zero callers) had
+# drifted a full major behind every candidate and referenced an undeclared secret with nothing to
+# say so.
+#
+# No `paths:` filter, deliberately. QAtlasHub's copy has one, and for a repo that is almost entirely
+# workflows it buys nothing while risking a known trap: a required check with a `paths:` filter
+# reports "expected" forever on any PR that misses the filter, and never-ran is not the same as
+# skipped — the PR becomes unmergeable. Cheaper to lint every PR in a repo this small.
+#
+# Owner-local by the same rule as `labeler.yml`: Actions access, org secrets and runner groups do not
+# cross the QAtlasHub / lab-sotashimozono / sotashimozono boundaries, and the body is owner-agnostic.
+name: Lint workflows
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: reviewdog/action-actionlint@v1
+        with:
+          reporter: github-check
+          fail_level: error
