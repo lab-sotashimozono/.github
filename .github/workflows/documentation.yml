@@ -20,6 +20,20 @@ name: Documentation
 #
 # `preview-base-url` is only cosmetic: it is what the PR comment links to. Leave it empty on the
 # `path` target and the comment states the on-box path instead of inventing a URL.
+#
+# CALLER CONTRACT. A called workflow's token cannot exceed the caller's, so the caller declares the
+# permissions, not this file:
+#
+#   permissions: { contents: write, statuses: write, pull-requests: write, pages: write }
+#
+# `contents: write` for the gh-pages push, `pull-requests: write` for the preview comment, `pages:
+# write` for the rebuild poke. Pass `DOCUMENTER_KEY` explicitly (or `secrets: inherit`) if the repo
+# deploys with a deploy key rather than GITHUB_TOKEN.
+#
+# Action versions here track what the repos actually run — they are NOT pinned low on purpose. This
+# file sat with zero callers and drifted a full major behind every candidate (checkout v4 vs v7,
+# setup-julia v2 vs v3, find-comment v3 vs v4, create-or-update-comment v4 vs v5), so adopting it
+# would have been a downgrade for all 42 of them.
 
 on:
   workflow_call:
@@ -52,14 +66,22 @@ on:
         description: "target='gh-pages': poke the Pages build API after pushing (no-op when Pages does not serve the repo)"
         type: boolean
         default: true
+    secrets:
+      # DECLARED, because it was already referenced. A secret a called workflow does not declare is
+      # EMPTY unless the caller says `secrets: inherit` — and this workflow's whole deploy decision is
+      # "deploydocs deploys iff it is given credentials", so an always-empty DOCUMENTER_KEY silently
+      # removed one of the two credential paths. It happened to be harmless on `gh-pages`, where
+      # GITHUB_TOKEN carries the push, which is exactly why nothing would have reported it.
+      DOCUMENTER_KEY:
+        required: false
 
 jobs:
   docs:
     runs-on: ${{ fromJSON(inputs.runner) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: julia-actions/setup-julia@v2
+      - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ inputs.julia-version }}
 
@@ -110,7 +132,7 @@ jobs:
       - name: Find an existing preview comment
         if: ${{ github.event_name == 'pull_request' && success() }}
         id: find-comment
-        uses: peter-evans/find-comment@v3
+        uses: peter-evans/find-comment@v4
         with:
           issue-number: ${{ github.event.pull_request.number }}
           comment-author: 'github-actions[bot]'
@@ -132,7 +154,7 @@ jobs:
 
       - name: Post the preview location to the PR
         if: ${{ github.event_name == 'pull_request' && success() }}
-        uses: peter-evans/create-or-update-comment@v4
+        uses: peter-evans/create-or-update-comment@v5
         with:
           comment-id: ${{ steps.find-comment.outputs.comment-id }}
           issue-number: ${{ github.event.pull_request.number }}
