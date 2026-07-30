@@ -19,7 +19,17 @@ name: CleanupPreview
 # WHY SWEEP EXISTS. `event` cannot remove a preview that was ALREADY orphaned — it only ever fires
 # on `pull_request: closed`, so anything left behind before the workflow existed, by a run that
 # failed, or by a preview published after the cleanup ran, stays forever. Measured on one repo:
-# sixteen such directories, 40.6 MB, a third of the branch. `sweep` states the same job as an
+# sixteen such directories.
+#
+# NOT a size argument, and an earlier revision of this comment wrongly made it one ("40.6 MB, a
+# third of the branch"). That figure was a naive sum of `git ls-tree -r -l` sizes, which counts a
+# shared blob once per path — and every preview ships an identical copy of the Documenter assets,
+# themes and JS. The sixteen directories held 40.7 MB by that sum and **6.1 MB of unique blobs**;
+# the whole branch was 100.9 MB by that sum and 15.4 MB unique, packing to 8.3 MiB. Git deduplicates,
+# so orphaned previews cost almost nothing in bytes.
+#
+# The reason to remove them is that a stale preview URL is WRONG, not that it is large: it serves the
+# docs of a pull request that no longer exists, indefinitely. `sweep` states the same job as an
 # INVARIANT — "no preview outlives its pull request" — so a caller that schedules it is
 # self-healing: a missed `event` costs one period of one directory instead of forever.
 #
