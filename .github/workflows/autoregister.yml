@@ -31,6 +31,9 @@ jobs:
   autoregister:
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.v.outputs.changed }}
+      curr: ${{ steps.v.outputs.curr }}
     permissions:
       # Must NOT exceed what the per-repo callers grant (contents+issues) — a reusable workflow
       # requesting a permission the caller omits fails to START ("workflow file issue"). Do NOT add
@@ -124,3 +127,96 @@ jobs:
             gh release create "$TAG" --title "$TAG" --generate-notes
           fi
           echo "Published release $TAG"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PRIVATE → also register the version in LabRegistry, as a PR.
+  #
+  # WHY THIS EXISTS. CompatHelper resolves "latest version" by looking a dependency's UUID up in a
+  # reachable REGISTRY; it has no code path that reads `[sources]`. Private packages were registered
+  # nowhere, so every internal `[compat]` bound was invisible to it and had to be bumped by hand —
+  # that is what ParameterizedITensor#159 was. LabRegistry exists to make the version NUMBER
+  # discoverable. It is NOT how anything resolves: internal deps stay pinned `[sources] rev = "main"`
+  # by fleet policy, and that still decides the commit.
+  #
+  # WHY A SEPARATE JOB ON `rosina`. Registering is a CROSS-REPO write. This repo's `github.token`
+  # cannot touch LabRegistry, and `BOT_PAT` is an org secret GitHub Free does not deliver to PRIVATE
+  # repos — which is precisely the branch this runs on. The `rosina` pool carries the persistent org
+  # login CI already uses to clone private `[sources]` deps. It needs no extra `permissions:` for the
+  # same reason: nothing here is done with this repo's token.
+  #
+  # WHY A PR AND NOT A PUSH. LabRegistry's CI re-clones the package and confirms the recorded
+  # `git-tree-sha1` really exists and that the Project.toml at that tree agrees on name/uuid/version;
+  # its AutoMerge lands the PR when that is green. Pushing straight to main would skip the only check
+  # that can catch a bad registration.
+  #
+  # LabRegistry's nightly `Sync` job is the BACKSTOP, not the primary path — it catches releases that
+  # happened while the pool was down. This job is what makes registration prompt.
+  register-lab:
+    needs: autoregister
+    if: >
+      needs.autoregister.outputs.changed == 'true' &&
+      github.event.repository.private == true
+    runs-on: [self-hosted, rosina]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1'
+      - name: Register in LabRegistry (PR)
+        env:
+          PKG_VERSION: ${{ needs.autoregister.outputs.curr }}
+          REG: ${{ runner.temp }}/LabRegistry
+        run: |
+          set -euo pipefail
+          cred="$(gh auth token 2>/dev/null || true)"
+          if [ -z "$cred" ]; then
+            echo "::warning::no rosina login here — skipping; the nightly Sync job will pick this version up"
+            exit 0
+          fi
+          echo "::add-mask::$cred"
+          export GH_TOKEN="$cred"
+
+          rm -rf "$REG"
+          gh repo clone lab-sotashimozono/LabRegistry "$REG" -- -q
+
+          # Only versions of packages ALREADY in the registry. `Registry.toml`'s `[packages]` is the
+          # curated list, and adding to it stays a human decision — a new package registering itself
+          # on its first release is not something CI should decide.
+          name=$(grep -m1 '^name' Project.toml | sed 's/.*"\(.*\)"/\1/')
+          if ! grep -q "name = \"$name\"" "$REG/Registry.toml"; then
+            echo "$name is not in LabRegistry's curated [packages] — nothing to do."
+            exit 0
+          fi
+
+          # LocalRegistry COMMITS the registration itself, so (a) the runner needs a git identity
+          # before Julia runs — the registry's own first rosina run died on exactly this, with
+          # "unable to auto-detect email address" — and (b) "did anything happen" is a COMMIT
+          # comparison, not `git diff`, because the tree is clean either way.
+          git -C "$REG" config user.name  'github-actions[bot]'
+          git -C "$REG" config user.email 'github-actions[bot]@users.noreply.github.com'
+          before=$(git -C "$REG" rev-parse HEAD)
+
+          julia --startup-file=no --color=yes -e '
+            using Pkg; Pkg.activate(; temp = true); Pkg.add("LocalRegistry")
+            using LocalRegistry
+            register(pwd(); registry = ENV["REG"], push = false,
+                     repo = "https://github.com/" * ENV["GITHUB_REPOSITORY"] * ".git")' \
+            || { echo "::warning::register failed (already registered?) — Sync will reconcile"; exit 0; }
+
+          after=$(git -C "$REG" rev-parse HEAD)
+          if [ "$before" = "$after" ]; then
+            echo "nothing new to register"
+            exit 0
+          fi
+
+          branch="register/$name-v${PKG_VERSION}"
+          git -C "$REG" checkout -q -b "$branch"
+          git -C "$REG" push -q -u origin "$branch"
+          gh pr create --repo lab-sotashimozono/LabRegistry --base main --head "$branch" \
+            --title "Register $name v${PKG_VERSION}" \
+            --body "Automated on the release of \`$name\` v${PKG_VERSION}.
+
+          Registered so CompatHelper can see the version. Resolution is unaffected — internal deps
+          stay pinned \`[sources] rev = \"main\"\`."
