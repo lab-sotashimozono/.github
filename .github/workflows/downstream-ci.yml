@@ -7,6 +7,20 @@ name: Downstream CI
 # CI.yml (which does not bump a version) => cannot loop, even on circular deps. Fire-and-forget: a
 # failing downstream run surfaces in that repo's own Actions tab + failure notifications. A manual
 # workflow_dispatch on the caller forces the fan-out (skips the version check) for testing.
+#
+# WHY THIS EXISTS, measured 2026-07-30. `ParaLinearAlgebra` went 0.9.2 -> 0.23.4 in one sitting —
+# fourteen breaking minors — and every one of them escaped the enumerated `[compat]` bounds in seven
+# downstream repos. `Pkg` then refused to resolve and every shard died before running a test. Nothing
+# reported it: CompatHelper reads the registry and these deps arrive through `[sources] rev="main"`,
+# and the affected repos' CI was not triggered by anything, so they sat green-looking for weeks. One
+# of them (ComplexTimeEvolution) had been red since 2026-07-19. They were found by accident, when an
+# unrelated one-line workflow PR happened to run a suite.
+#
+# This workflow is the thing that was missing. Each of those fourteen bumps would have dispatched the
+# dependents and gone red on the spot. See lab-sotashimozono/.github#16.
+#
+# `BOT_PAT` is a REPO-level secret in each provider, not an org one: on the free plan org secrets are
+# withheld from private repos, so an org-level BOT_PAT would arrive empty here.
 
 on:
   workflow_call:
@@ -20,7 +34,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 2
 
@@ -51,6 +65,15 @@ jobs:
         run: |
           set +e
           ME="${{ github.repository }}"; ORG="${ME%%/*}"; NAME="${ME##*/}"
+          # Match on our own UUID, not on the `[sources]` URL. The URL only appears for deps pinned
+          # to a git rev, so a dependent that takes us as a WEAKDEP (an extension) with a `[compat]`
+          # bound and no `[sources]` entry was invisible — and those break too: ComplexTimeEvolution
+          # holds ParaLinearAlgebra exactly that way and its bound was one of the seven that died in
+          # the 0.9 -> 0.23 march. A UUID also cannot be matched by prose: that repo's Project.toml
+          # names "ParaLinearAlgebra" in a comment, which a name grep would have counted.
+          ME_UUID=$(grep -m1 '^uuid' Project.toml | sed 's/.*"\(.*\)"/\1/')
+          if [ -z "$ME_UUID" ]; then echo "::error::no uuid in Project.toml"; exit 1; fi
+          echo "matching dependents on uuid=$ME_UUID"
           repos=$(gh api "orgs/$ORG/repos?per_page=100&type=all" --paginate --jq '.[] | select(.archived==false) | .name' 2>&1)
           rc=$?
           echo "repo list rc=$rc count=$(printf '%s\n' "$repos" | grep -c .)"
@@ -59,7 +82,9 @@ jobs:
           for r in $repos; do
             [ "$ORG/$r" = "$ME" ] && continue
             pt=$(gh api "repos/$ORG/$r/contents/Project.toml" --jq '.content' 2>/dev/null | base64 -d 2>/dev/null)
-            printf '%s' "$pt" | grep -qF "$ORG/$NAME" || continue
+            # uuid covers [deps], [weakdeps] and [extras]; the URL form is kept as an OR for a repo
+            # that pins the source without listing us as a dep.
+            printf '%s' "$pt" | grep -qF "$ME_UUID" || printf '%s' "$pt" | grep -qF "$ORG/$NAME" || continue
             echo "  dependent: $r"
             if gh workflow run CI.yml --repo "$ORG/$r" --ref main 2>&1; then echo "    dispatched"; n=$((n+1)); else echo "    dispatch FAILED"; fi
           done
