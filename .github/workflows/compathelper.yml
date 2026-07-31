@@ -1,6 +1,28 @@
 name: CompatHelper
 
 # Reusable CompatHelper — opens `[compat]` bump PRs.
+#
+# TWO REGISTRIES, and the second is why internal `[compat]` bounds used to be bumped by hand.
+# CompatHelper resolves "latest version" by looking a dependency's UUID up in a reachable REGISTRY
+# (`get_latest_version!`, CompatHelper/src/dependencies.jl) — it has NO code path that reads
+# `[sources]`. Our internal packages are private and were registered nowhere (General takes public
+# packages only), so `latest_version` stayed `nothing` and every one of them was skipped silently.
+# That is what ParameterizedITensor#159 was: ParaLinearAlgebra crossed minor bounds repeatedly and
+# the downstream bound had to be opened by hand each time.
+#
+# `LabRegistry` (private, org-owned) fixes exactly that and nothing else. It is NOT how anything
+# resolves — the fleet pins internal deps `[sources] rev = "main"` on purpose and that still decides
+# the commit. The registry only makes a version NUMBER discoverable. Its own nightly `Sync` job
+# keeps it current, an hour before this cron.
+#
+# MEASURED before wiring it up, on ParameterizedITensor's Project.toml with the bounds tightened so
+# a bump was required:
+#
+#     dep                 compat        General only    General + LabRegistry
+#     ComplexAnalysis     0.1           NOT FOUND       0.1.81
+#     FunctionMeasures    0.1.60        NOT FOUND       0.1.73
+#     ParaLinearAlgebra   0.23          NOT FOUND       0.26.2
+#     ITensors (control)  0.7, 0.8, 0.9 0.9.30          0.9.30
 # PR-authoring token precedence (resolved locally in the step; never written to output/env):
 #   1. BOT_PAT (org secret) — delivered to PUBLIC repos on Free.
 #   2. self-hosted runner's `gh auth token` — the SAME login CI uses to clone private
@@ -32,9 +54,35 @@ jobs:
           fi
           [ -z "$cred" ] && cred="$FALLBACK"
           echo "::add-mask::$cred"
-          GITHUB_TOKEN="$cred" julia --color=yes -e '
+          # PROBE, do not assume. `LabRegistry` is PRIVATE, so a runner without the org login
+          # cannot clone it — and CompatHelper treats a registry it was told about and cannot
+          # fetch as a hard error, which would take the whole job down. The public repos in this
+          # org have no internal `[sources]` deps (they could not: a public package cannot depend
+          # on a private one), so for them the registry is not merely unreachable, it is
+          # unnecessary. One `ls-remote` decides it, and the fallback is exactly today's behaviour.
+          LAB_REGISTRY=0
+          if git ls-remote "https://github.com/lab-sotashimozono/LabRegistry.git" HEAD \
+               >/dev/null 2>&1; then
+            LAB_REGISTRY=1
+            echo "LabRegistry reachable — internal [compat] bounds are in scope"
+          else
+            echo "LabRegistry unreachable from this runner — General only (unchanged behaviour)"
+          fi
+          LAB_REGISTRY="$LAB_REGISTRY" GITHUB_TOKEN="$cred" julia --color=yes -e '
             using Pkg
             Pkg.activate(; temp = true)
             Pkg.add("CompatHelper")
             using CompatHelper
-            CompatHelper.main()'
+            regs = Pkg.RegistrySpec[Pkg.RegistrySpec(;
+                name = "General",
+                uuid = "23338594-aafe-5451-b93e-139f81909106",
+                url  = "https://github.com/JuliaRegistries/General.git",
+            )]
+            if ENV["LAB_REGISTRY"] == "1"
+                push!(regs, Pkg.RegistrySpec(;
+                    name = "LabRegistry",
+                    uuid = "fc499065-e3ff-468f-be43-caddc0e4b170",
+                    url  = "https://github.com/lab-sotashimozono/LabRegistry.git",
+                ))
+            end
+            CompatHelper.main(; registries = regs)'
