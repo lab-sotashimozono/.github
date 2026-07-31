@@ -190,8 +190,12 @@ jobs:
             exit 0
           fi
 
-          # LocalRegistry COMMITS the registration itself, so "did anything happen" is a commit
-          # comparison, not `git diff`. Record where main was before it runs.
+          # LocalRegistry COMMITS the registration itself, so (a) the runner needs a git identity
+          # before Julia runs — the registry's own first rosina run died on exactly this, with
+          # "unable to auto-detect email address" — and (b) "did anything happen" is a COMMIT
+          # comparison, not `git diff`, because the tree is clean either way.
+          git -C "$REG" config user.name  'github-actions[bot]'
+          git -C "$REG" config user.email 'github-actions[bot]@users.noreply.github.com'
           before=$(git -C "$REG" rev-parse HEAD)
 
           julia --startup-file=no --color=yes -e '
