@@ -1,0 +1,14 @@
+# actionlint config for this org.
+#
+# `rosina` is the label of the self-hosted pool. actionlint validates `runs-on` against GitHub's
+# HOSTED labels and rejects anything else, so a job that names the pool directly fails the lint —
+# `autoregister.yml`'s `register-lab`, which must run there because registering in LabRegistry is a
+# cross-repo write that only the runner's persistent org login can do.
+#
+# The reusable workflows that take a `runner:` INPUT were never flagged, because the value arrives as
+# a string expression actionlint cannot see through. That is not the lint being satisfied — it is the
+# lint being blind, and the label was always just as custom. Declaring it here is what actionlint's
+# own error message asks for.
+self-hosted-runner:
+  labels:
+    - rosina
