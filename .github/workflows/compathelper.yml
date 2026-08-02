@@ -10,10 +10,20 @@ name: CompatHelper
 # That is what ParameterizedITensor#159 was: ParaLinearAlgebra crossed minor bounds repeatedly and
 # the downstream bound had to be opened by hand each time.
 #
-# `LabRegistry` (private, org-owned) fixes exactly that and nothing else. It is NOT how anything
-# resolves — the fleet pins internal deps `[sources] rev = "main"` on purpose and that still decides
-# the commit. The registry only makes a version NUMBER discoverable. Its own nightly `Sync` job
-# keeps it current, an hour before this cron.
+# `LabRegistry` (private, org-owned) fixes exactly that. Its own nightly `Sync` job keeps it
+# current, an hour before this cron.
+#
+# ITS ROLE IS CHANGING (lab-sotashimozono/.github#20). This header used to end "the registry only
+# makes a version NUMBER discoverable — the fleet pins internal deps `[sources] rev = \"main\"` on
+# purpose and that still decides the commit". The fleet is moving OFF `[sources]`: because
+# `VersionCheck` forces a bump on every PR and `AutoRegister` registers it, the latest registered
+# version IS main, minutes behind, so the pins bought nothing while costing CompatHelper visibility
+# and a transitive re-declaration in every consumer. ParameterizedITensor.jl#172 is the first edge.
+#
+# That promotes THIS workflow: with `[sources]` gone, the bump PR opened here is the fleet's
+# integration test — the place a breaking upstream change actually gets run against a dependent.
+# `downstream-ci.yml` stays as an early warning, but a dispatched dependent resolves its own pinned
+# version and so cannot be that test. Which is why the duplicate-PR hygiene below is not cosmetic.
 #
 # MEASURED before wiring it up, on ParameterizedITensor's Project.toml with the bounds tightened so
 # a bump was required:
@@ -86,3 +96,44 @@ jobs:
                 ))
             end
             CompatHelper.main(; registries = regs)'
+
+          # ---- collapse duplicate bump PRs -------------------------------------------------
+          #
+          # CompatHelper decides "is there already an open PR for this bump?" through the SEARCH
+          # API, which returns nothing for PRIVATE-repo content under any token we have here — the
+          # same blindness that made release notes say "No merged pull requests". So on a private
+          # repo it does not find its own PR and opens a NEW one every run. Measured 2026-08-02 on
+          # ITensorPartitionFunctions.jl: three byte-identical `QAtlas -> 0.31` PRs (#17, #18, #19)
+          # created 12:49, 16:42, 20:40 — one per scheduled run, i.e. ~6/day/dependency.
+          #
+          # The REST *list* endpoint DOES work on a private repo (it is `--search` specifically that
+          # is blind), so dedupe is possible here even though CompatHelper cannot do it itself.
+          # Group the open `compathelper/*` PRs by TITLE — which encodes dep, section and target
+          # version, so identical titles really are the same bump — and keep only the newest.
+          #
+          # Runs AFTER CompatHelper so this run's own PR is included and the collapse is immediate.
+          # Hygiene, never correctness: any failure here is reported and ignored.
+          set +e
+          echo "--- collapsing duplicate compathelper PRs ---"
+          open_prs=$(GH_TOKEN="$cred" gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 100 \
+                       --json number,title,headRefName,createdAt 2>/dev/null)
+          if [ -z "$open_prs" ]; then
+            echo "could not list PRs — skipping dedupe"
+          else
+            # newest per title kept; every older one with the same title closed
+            stale=$(printf '%s' "$open_prs" | jq -r '
+              [ .[] | select(.headRefName | startswith("compathelper/")) ]
+              | group_by(.title)
+              | map(sort_by(.createdAt) | reverse | .[1:])
+              | flatten | .[] | "\(.number)"' 2>/dev/null)
+            if [ -z "$stale" ]; then
+              echo "no duplicates"
+            else
+              for n in $stale; do
+                echo "  closing duplicate #$n"
+                GH_TOKEN="$cred" gh pr close "$n" --repo "$GITHUB_REPOSITORY" --delete-branch \
+                  --comment "Superseded by a newer CompatHelper run proposing the same bump. Closed automatically: CompatHelper cannot see its own open PRs on a private repo (its check uses the search API, which is blind there), so it re-opens one every run." \
+                  >/dev/null 2>&1 || echo "    close FAILED for #$n"
+              done
+            fi
+          fi
