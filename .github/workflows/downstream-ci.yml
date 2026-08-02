@@ -1,8 +1,15 @@
 name: Downstream CI
 
 # Reusable. When a lab package makes a BREAKING version bump on main — for a 0.x package a MINOR bump,
-# for a >=1.0 package a MAJOR bump — find the lab-sotashimozono repos whose Project.toml `[sources]`
-# DIRECTLY depend on it and trigger THEIR CI (workflow_dispatch), so breakage is caught immediately.
+# for a >=1.0 package a MAJOR bump — find the lab-sotashimozono repos that DIRECTLY depend on it and
+# trigger THEIR CI (workflow_dispatch), so breakage is caught immediately.
+#
+# DEPENDENTS ARE FOUND BY **UUID**, not by `[sources]`. This header used to say `[sources]`, which was
+# true of the first version and has not been true since the UUID match went in (see the comment at the
+# matching step, and the ComplexTimeEvolution weakdep case it was written for). The stale wording cost
+# real time on 2026-08-02: it was read as the implementation and made the `[sources]` -> LabRegistry
+# migration look blocked on rewiring this workflow, which it is not. UUID matching covers `[deps]`,
+# `[weakdeps]` and `[extras]`, so detection survives a repo dropping `[sources]` entirely.
 # Internal deps track rev="main" (which CompatHelper cannot see). DIRECT dependents only + dispatching
 # CI.yml (which does not bump a version) => cannot loop, even on circular deps. Fire-and-forget: a
 # failing downstream run surfaces in that repo's own Actions tab + failure notifications. A manual
