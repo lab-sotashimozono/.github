@@ -1,0 +1,118 @@
+name: Julia sharded tests
+
+# Reusable: the fleet's whole test job. A caller is one block:
+#
+#   jobs:
+#     ci:
+#       permissions:
+#         contents: write            # the timing history; see below, it is NOT optional
+#       uses: lab-sotashimozono/.github/.github/workflows/julia-testshards.yml@main
+#       with: { shards: 8 }
+#       secrets:
+#         CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+#
+# The sharding itself is QAtlasHub/TestShards.jl. This wrapper exists for exactly one reason,
+# and it is not taste:
+#
+# ── Why the coverage upload cannot live in TestShards ────────────────────────────────────────
+#
+# A secret does not reach a called workflow when the caller is PRIVATE **and** the callee is in
+# ANOTHER organisation. Neither condition alone does it. Measured, one variable at a time:
+#
+#   QAtlasHub/DataVault.jl          -> QAtlasHub/TestShards.jl   same org,  PUBLIC    arrives
+#   lab-sotashimozono/ITensorModels -> QAtlasHub/TestShards.jl   other org, PUBLIC    arrives
+#   lab-sotashimozono/ITensorAD.jl  -> QAtlasHub/TestShards.jl   other org, PRIVATE   EMPTY
+#   lab-sotashimozono/ParaLinearAlgebra -> this repo             same org,  PRIVATE   arrives
+#
+# The last row is why this file works: this organisation's own private repos CAN hand a secret
+# to this workflow. So the upload happens HERE, one copy, instead of being inlined into every
+# private repository in the fleet — which is what it was going to be before someone asked
+# whether the generated CI.yml was actually reusable.
+#
+# TestShards is therefore called with `coverage-upload: false`: it still merges every shard's
+# counters into one report and publishes it as the `testshards-lcov` artifact, and this file
+# does the sending. A PUBLIC repository does not need any of this and can call TestShards
+# directly, passing its own `secrets:` — see QAtlasHub/TestShards.jl's getting-started.
+#
+# ── The `contents: write` grant ──────────────────────────────────────────────────────────────
+#
+# A called workflow's jobs may not request more permission than the caller granted, and the
+# timing history is pushed to a `ci-timings` orphan branch. Granting less makes the run fail to
+# START — `startup_failure`, with no log to read.
+
+on:
+  workflow_call:
+    inputs:
+      shards:
+        description: 'Number of shards. The diagnosis printed on every run names the knee for your suite.'
+        type: number
+        default: 8
+      runner:
+        description: 'runs-on as JSON. Private repos must use the self-hosted pool.'
+        type: string
+        default: '["self-hosted","rosina"]'
+      helper-runner:
+        description: 'Runner for the merge jobs and the coverage upload.'
+        type: string
+        default: '["self-hosted","rosina"]'
+      julia-version:
+        type: string
+        default: '1'
+      test-root:
+        description: 'Directory holding runtests.jl.'
+        type: string
+        default: 'test'
+      registries:
+        description: >
+          Registries this package resolves from, one per line, when General is not enough — a
+          name or a clone URL. Added only if not already reachable. On the rosina pool the depot
+          is persistent PER BOX and the boxes do not all carry the same registries, so a missing
+          one fails PARTIALLY and reads as flake.
+        type: string
+        default: ''
+      coverage:
+        type: boolean
+        default: true
+      diagnose:
+        type: boolean
+        default: true
+    secrets:
+      CODECOV_TOKEN:
+        required: false
+
+jobs:
+  test:
+    permissions:
+      contents: write
+    uses: QAtlasHub/TestShards.jl/.github/workflows/sharded-tests.yml@main
+    with:
+      shards: ${{ inputs.shards }}
+      runner: ${{ inputs.runner }}
+      helper-runner: ${{ inputs.helper-runner }}
+      julia-version: ${{ inputs.julia-version }}
+      test-root: ${{ inputs.test-root }}
+      registries: ${{ inputs.registries }}
+      coverage: ${{ inputs.coverage }}
+      diagnose: ${{ inputs.diagnose }}
+      # The sending is ours, below. Passing the secret onward would not help: this workflow's
+      # own call into TestShards crosses an organisation boundary, and while THIS repo is
+      # public and so could pass it, keeping the upload here means one copy of it, here.
+      coverage-upload: false
+
+  # Its own job because the action checks out the repository — Codecov builds the report's file
+  # network from the tree and rejects a report without one during server-side PROCESSING, which
+  # is invisible from the run — and a checkout cleans the workspace.
+  #
+  # No token is a supported state: the action skips the send, says so in the log once, and the
+  # coverage percentage is still in the run summary with the report kept as an artifact. That
+  # matters here because an organisation secret is NOT delivered to a private repository on a
+  # free plan, so several repos in this fleet have no CODECOV_TOKEN of their own.
+  coverage:
+    name: Coverage (upload)
+    needs: test
+    if: ${{ inputs.coverage && !cancelled() && needs.test.result != 'cancelled' }}
+    runs-on: ${{ fromJSON(inputs.helper-runner) }}
+    steps:
+      - uses: QAtlasHub/TestShards.jl/actions/upload-coverage@main
+        with:
+          codecov-token: ${{ secrets.CODECOV_TOKEN }}
