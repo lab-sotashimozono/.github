@@ -70,6 +70,19 @@ on:
           one fails PARTIALLY and reads as flake.
         type: string
         default: ''
+      cache:
+        description: >
+          Cache the Julia depot with `julia-actions/cache`. DEFAULT FALSE here, and that is the
+          opposite of TestShards' own default on purpose: this reusable defaults `runner` to the
+          self-hosted pool, whose depot already persists per box. There the restore is a no-op and
+          the SAVE costs about what the tests cost — measured on one green eight-shard run, 44–182 s
+          of post-step per shard against 58–268 s of testing, ≈620 s of runner time per run — and
+          when it hangs it holds a self-hosted runner indefinitely, with every test green
+          (QAtlasHub/TestShards.jl#62; one job held a runner 114 minutes).
+          Set it `true` if you have overridden `runner` to a HOSTED one, whose depot does not
+          survive the job.
+        type: boolean
+        default: false
       coverage:
         type: boolean
         default: true
@@ -93,6 +106,7 @@ jobs:
       test-root: ${{ inputs.test-root }}
       registries: ${{ inputs.registries }}
       coverage: ${{ inputs.coverage }}
+      cache: ${{ inputs.cache }}
       diagnose: ${{ inputs.diagnose }}
       # The sending is ours, below. Passing the secret onward would not help: this workflow's
       # own call into TestShards crosses an organisation boundary, and while THIS repo is
