@@ -1,0 +1,19 @@
+name: AutoRegister
+on:
+  workflow_run:
+    workflows: ['Release Drafter']
+    types: [completed]
+    branches: [main]
+jobs:
+  autoregister:
+    permissions:
+      contents: write
+      issues: write
+    uses: lab-sotashimozono/.github/.github/workflows/autoregister.yml@main
+    # Private repo → the pool. Only private repos consume the org's 2000 included Actions
+    # minutes/month, and the reusable defaults to `"ubuntu-latest"` because it also serves PUBLIC
+    # callers, which cannot use the pool at all (the runner group is `allows_public: false`, so a
+    # public repo asking for it QUEUES FOREVER rather than failing).
+    with:
+      runner: '["self-hosted","rosina"]'
+    secrets: inherit

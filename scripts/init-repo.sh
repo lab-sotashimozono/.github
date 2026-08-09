@@ -5,7 +5,9 @@
 # Stamps only what the org actually owns as reusables:
 #   FormatCheck.yml   → reusable format-check (JuliaFormatter v2; rosina for private)
 #   CompatHelper.yml  → reusable compathelper (BOT_PAT-authored PRs, so CI triggers)
-#   AutoRegister.yml  → reusable autoregister (public → @JuliaRegistrator / private → tag)
+#   AutoRegister.yml  → reusable autoregister (public → @JuliaRegistrator / private → tag; the
+#                       private template also pins the first job to rosina, since only private
+#                       repos burn included Actions minutes)
 #   PRLabeler.yml     → reusable labeler, hosted in QAtlasHub/.github (ONE implementation for
 #                       both orgs — the per-repo hand-rolled `gh pr edit` version is what the
 #                       Projects-classic sunset broke in 40 repos at once on 2026-07-28)
@@ -32,7 +34,7 @@ git checkout -b chore/adopt-org-workflows
 mkdir -p .github/workflows
 cp "$TPL/FormatCheck.$VIS.yml" .github/workflows/FormatCheck.yml
 cp "$TPL/CompatHelper.$VIS.yml" .github/workflows/CompatHelper.yml
-cp "$TPL/AutoRegister.yml"     .github/workflows/AutoRegister.yml
+cp "$TPL/AutoRegister.$VIS.yml" .github/workflows/AutoRegister.yml
 cp "$TPL/PRLabeler.$VIS.yml"   .github/workflows/PRLabeler.yml
 cp "$TPL/dependabot.yml"       .github/dependabot.yml
 
