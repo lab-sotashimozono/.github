@@ -18,6 +18,21 @@ name: AutoRegister
 # already-published release (harmless).
 on:
   workflow_call:
+    inputs:
+      # `runs-on` for the FIRST job, as JSON: '"ubuntu-latest"' or '["self-hosted","rosina"]'.
+      #
+      # Defaults to hosted, and the default is load-bearing rather than lazy: this reusable serves
+      # PUBLIC callers too, the org runner group is `allows_public: false`, and a public repo asking
+      # for `[self-hosted, rosina]` does not fail — it QUEUES FOREVER. So the safe default is the one
+      # that works everywhere, and private callers opt in.
+      #
+      # Private callers SHOULD pass the pool. On the free plan only private repos consume the org's
+      # 2000 included minutes/month, and measured 2026-08-09 this job was one of only two hosted jobs
+      # still firing regularly across the private fleet. `register-lab` below is already pinned to
+      # the pool unconditionally — it has to be, since it needs the persistent org git login.
+      runner:
+        type: string
+        default: '"ubuntu-latest"'
     secrets:
       # BOT_PAT (org secret) must be DECLARED so it reliably reaches this reusable
       # workflow from a `workflow_run`-triggered caller — `secrets: inherit` alone was
@@ -30,7 +45,7 @@ on:
 jobs:
   autoregister:
     if: github.event.workflow_run.conclusion == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner) }}
     outputs:
       changed: ${{ steps.v.outputs.changed }}
       curr: ${{ steps.v.outputs.curr }}
