@@ -18,9 +18,11 @@ name: AutoMerge CompatHelper
 on:
   workflow_call:
     inputs:
+      # `runs-on` as JSON. **Leave unset** and the pool follows the CALLER's visibility —
+      # private -> rosina, public -> ubuntu-latest. Canonical note: `autoregister.yml`.
       runner:
         type: string
-        default: '"ubuntu-latest"'
+        default: ''
       head_branch:
         description: Head branch of the CI run that just completed (compathelper/*).
         type: string
@@ -32,7 +34,7 @@ on:
 
 jobs:
   merge:
-    runs-on: ${{ fromJSON(inputs.runner) }}
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || (github.event.repository.private && fromJSON('["self-hosted","rosina"]') || 'ubuntu-latest') }}
     permissions:
       contents: write
       pull-requests: write

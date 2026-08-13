@@ -1,7 +1,7 @@
 name: Format Check
 
-# Reusable JuliaFormatter check. Callers pass `runner` (JSON runs-on):
-# private → '["self-hosted","rosina"]', public → '"ubuntu-latest"'.
+# Reusable JuliaFormatter check. The pool follows the CALLER's visibility unless `runner` is
+# passed — private → rosina, public → ubuntu-latest. Canonical note: `autoregister.yml`.
 #
 # TWO things here are load-bearing — do not "simplify" them away:
 #
@@ -20,16 +20,18 @@ name: Format Check
 on:
   workflow_call:
     inputs:
+      # `runs-on` as JSON. **Leave unset** and the pool follows the CALLER's visibility —
+      # private -> rosina, public -> ubuntu-latest. Canonical note: `autoregister.yml`.
       runner:
         type: string
-        default: '"ubuntu-latest"'
+        default: ''
 
 env:
   JF_VERSION: '2.10.1'
 
 jobs:
   format-check:
-    runs-on: ${{ fromJSON(inputs.runner) }}
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || (github.event.repository.private && fromJSON('["self-hosted","rosina"]') || 'ubuntu-latest') }}
     steps:
       - uses: actions/checkout@v4
       - uses: julia-actions/setup-julia@v2

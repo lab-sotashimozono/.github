@@ -29,18 +29,19 @@ name: PR Labeler (reusable)
 on:
   workflow_call:
     inputs:
+      # `runs-on` as JSON. **Leave unset** and the pool follows the CALLER's visibility —
+      # private -> rosina, public -> ubuntu-latest. Canonical note: `autoregister.yml`.
       runner:
-        description: 'runs-on as a JSON string: ''"ubuntu-latest"'' or ''["self-hosted","rosina"]'''
         type: string
         required: false
-        default: '"ubuntu-latest"'
+        default: ''
 permissions:
   contents: read
   pull-requests: write
   issues: write          # addLabels / createLabel are issue-scoped, even on a PR
 jobs:
   label:
-    runs-on: ${{ fromJSON(inputs.runner) }}
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || (github.event.repository.private && fromJSON('["self-hosted","rosina"]') || 'ubuntu-latest') }}
     steps:
       - uses: actions/github-script@v9
         env:

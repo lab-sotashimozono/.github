@@ -38,10 +38,11 @@ name: Documentation
 on:
   workflow_call:
     inputs:
+      # `runs-on` as JSON. **Leave unset** and the pool follows the CALLER's visibility —
+      # private -> rosina, public -> ubuntu-latest. Canonical note: `autoregister.yml`.
       runner:
-        description: 'runs-on, as JSON: ''"ubuntu-latest"'' or ''["self-hosted","rosina"]'''
         type: string
-        default: '"ubuntu-latest"'
+        default: ''
       julia-version:
         description: "Julia version for setup-julia ('1' = latest stable 1.x — track upstream)"
         type: string
@@ -77,7 +78,7 @@ on:
 
 jobs:
   docs:
-    runs-on: ${{ fromJSON(inputs.runner) }}
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || (github.event.repository.private && fromJSON('["self-hosted","rosina"]') || 'ubuntu-latest') }}
     steps:
       - uses: actions/checkout@v7
 
