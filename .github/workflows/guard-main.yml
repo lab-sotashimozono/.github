@@ -10,11 +10,17 @@ name: Guard main
 # Deliberately does NOT auto-revert: a force-push is sometimes intentional (a rebase you
 # meant), and auto-restoring would destroy that instead. Record + alert; a human decides.
 on:
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      # `runs-on` as JSON, e.g. '["self-hosted","rosina"]'. Leave it unset and the pool is chosen
+      # from the CALLER's visibility — see the note above `runs-on` below.
+      runner:
+        type: string
+        default: ''
 
 jobs:
   guard:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || (github.event.repository.private && fromJSON('["self-hosted","rosina"]') || 'ubuntu-latest') }}
     permissions:
       issues: write
     steps:

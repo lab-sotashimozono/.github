@@ -5,8 +5,8 @@ name: AutoRegister
 #   PUBLIC  → request General registration via a @JuliaRegistrator comment
 #             (→ JuliaTagBot → the repo's TagBot → PublishRelease).
 #   PRIVATE → tag vX.Y.Z AND publish the GitHub Release, both HERE, in one step.
-# Runs on ubuntu-latest: lightweight (git + gh), and public repos cannot use the private
-# rosina pool anyway.
+# The first job is lightweight (git + gh) and runs wherever the caller's visibility puts it —
+# see the `runner` input below.
 #
 # Why private does the release itself (does NOT delegate to PublishRelease): an Action-pushed
 # tag does not reliably trigger the repo's PublishRelease — a GITHUB_TOKEN-pushed tag triggers
@@ -19,20 +19,46 @@ name: AutoRegister
 on:
   workflow_call:
     inputs:
+      # ---- THE POOL IS DERIVED, NOT DECLARED. This is the canonical note; the other reusables
+      # point here. -------------------------------------------------------------------------------
+      #
       # `runs-on` for the FIRST job, as JSON: '"ubuntu-latest"' or '["self-hosted","rosina"]'.
+      # **Leave it unset** and the pool is chosen from the CALLER's own visibility:
       #
-      # Defaults to hosted, and the default is load-bearing rather than lazy: this reusable serves
-      # PUBLIC callers too, the org runner group is `allows_public: false`, and a public repo asking
-      # for `[self-hosted, rosina]` does not fail — it QUEUES FOREVER. So the safe default is the one
-      # that works everywhere, and private callers opt in.
+      #     private  ->  ["self-hosted","rosina"]        (free; the whole point of the pool)
+      #     public   ->  "ubuntu-latest"                 (free anyway, and see below)
+      #     unknown  ->  "ubuntu-latest"                 (the old default; never worse than before)
       #
-      # Private callers SHOULD pass the pool. On the free plan only private repos consume the org's
-      # 2000 included minutes/month, and measured 2026-08-09 this job was one of only two hosted jobs
-      # still firing regularly across the private fleet. `register-lab` below is already pinned to
-      # the pool unconditionally — it has to be, since it needs the persistent org git login.
+      # WHY IT IS DERIVED AND NOT JUST DEFAULTED TO THE POOL. The org runner group is
+      # `allows_public: false`, so a PUBLIC repo asking for `[self-hosted, rosina]` does not fail —
+      # it QUEUES FOREVER. That is the constraint the old hosted default existed to respect, and
+      # deriving respects it exactly, per caller, instead of making every caller restate it.
+      #
+      # WHY IT IS NOT LEFT TO THE CALLER. It was, from 2026-08-09 to 2026-08-12, and the opt-in did
+      # not happen: the input was added, ~26 private callers never passed it, and on 2026-08-11
+      # 10:25 the org's 2000 included minutes/month (which only private repos consume) ran out. Every
+      # hosted job in every private repo was then refused BEFORE ITS FIRST STEP —
+      # `steps: 0`, no log, the reason visible only in the check-run annotation — while `main` looked
+      # green throughout, because the test suite runs on rosina and was never affected. Thirteen
+      # consecutive silent AutoRegister failures in one repo alone, and the versions they should have
+      # registered simply did not exist in LabRegistry. A default that is correct only if every
+      # caller remembers to override it is a default that will be wrong.
+      #
+      # `github.event.repository` is the CALLER's repository (the run belongs to the caller), and it
+      # is present in the push / pull_request / workflow_run payloads these reusables are invoked
+      # under. If it is ever absent the expression falls through to `ubuntu-latest`, which is exactly
+      # what this reusable did before — so the failure mode of the detection is "no change".
+      #
+      # An explicit `runner:` still wins, and there are real reasons to pass one:
+      # `template-bootstrap.yml` deliberately stays hosted (a public copy of the template could
+      # otherwise never initialize), and `reconcile.yml` must never touch the private pool with an
+      # admin token.
+      #
+      # `register-lab` below is pinned to the pool unconditionally — it has to be, since it needs the
+      # persistent org git login.
       runner:
         type: string
-        default: '"ubuntu-latest"'
+        default: ''
     secrets:
       # BOT_PAT (org secret) must be DECLARED so it reliably reaches this reusable
       # workflow from a `workflow_run`-triggered caller — `secrets: inherit` alone was
@@ -45,7 +71,7 @@ on:
 jobs:
   autoregister:
     if: github.event.workflow_run.conclusion == 'success'
-    runs-on: ${{ fromJSON(inputs.runner) }}
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || (github.event.repository.private && fromJSON('["self-hosted","rosina"]') || 'ubuntu-latest') }}
     outputs:
       changed: ${{ steps.v.outputs.changed }}
       curr: ${{ steps.v.outputs.curr }}

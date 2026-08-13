@@ -32,23 +32,18 @@ name: Downstream CI
 on:
   workflow_call:
     inputs:
-      # `runs-on` as JSON: '"ubuntu-latest"' or '["self-hosted","rosina"]'.
-      #
-      # Hosted by default because this reusable also serves PUBLIC callers, and the org runner group
-      # is `allows_public: false` — a public repo asking for the pool does not fail, it QUEUES
-      # FOREVER. Private callers opt in: only private repos consume the org's 2000 included
-      # minutes/month, and measured 2026-08-09 this was one of only two hosted jobs still firing
-      # regularly across the private fleet.
+      # `runs-on` as JSON. **Leave unset** and the pool follows the CALLER's visibility —
+      # private -> rosina, public -> ubuntu-latest. Canonical note: `autoregister.yml`.
       runner:
         type: string
-        default: '"ubuntu-latest"'
+        default: ''
     secrets:
       BOT_PAT:
         required: true
 
 jobs:
   downstream:
-    runs-on: ${{ fromJSON(inputs.runner) }}
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || (github.event.repository.private && fromJSON('["self-hosted","rosina"]') || 'ubuntu-latest') }}
     permissions:
       contents: read
     steps:
