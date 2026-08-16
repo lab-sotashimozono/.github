@@ -37,25 +37,28 @@ on:
       runner:
         type: string
         default: ''
-      # BATCHING. Empty (the default) keeps the original behaviour exactly: the caller fires on
-      # `push` and the gate compares `HEAD~1` with `HEAD`, so one merge is one decision.
+      # DEBOUNCE, and it is ON by default — that is the point. Callers fire this on every push to
+      # `main`, so a day of breaking bumps was a day of fan-outs. Measured 2026-08-16:
+      # ParaLinearAlgebra turned seven breaking minors into 60 downstream CI runs, and the four
+      # repositories carrying this workflow fired it 193 times in six days, all onto the one
+      # `rosina` pool everything else queues behind. The breakage reported is the same breakage
+      # whether it is announced once or seven times.
       #
-      # Set it to a `git --before=` window (e.g. `'25 hours'`) and the caller can fire on a nightly
-      # `schedule` instead: the gate then compares `HEAD` with whatever `main` was that long ago, so
-      # a day of merges produces ONE fan-out rather than one per breaking bump.
+      # WHY HERE AND NOT IN THE CALLERS. A caller-side fix means editing four workflow files, each
+      # costing a PR run plus a post-merge run — eight CI runs to reduce CI runs — and the setting
+      # would be identical in all four. Here, one change reaches every caller and the next
+      # adjustment costs two runs instead of eight.
       #
-      # WHY IT EXISTS, measured 2026-08-16 on ParaLinearAlgebra: seven breaking minors landed in one
-      # day (0.39 → 0.45), each firing this workflow, each dispatching seven dependents — 60
-      # downstream CI runs in a day, on the same `rosina` pool everything else queues behind. The
-      # breakage is the same breakage whether it is reported once or seven times; the seven cost a
-      # day of everyone's runner time.
+      # WHY A DEBOUNCE AND NOT A NIGHTLY CRON. A reusable workflow cannot carry its own `schedule`;
+      # a cron would have to live in each caller, which is the per-repo edit this avoids. The
+      # debounce is also better on the axis that matters: the FIRST breaking bump still fans out
+      # IMMEDIATELY, and only the repeats inside the window are suppressed. A nightly cron would
+      # have delayed that first report by up to a day.
       #
-      # The window should EXCEED the schedule interval (25 h for a daily cron), so a late or skipped
-      # run overlaps the previous window instead of leaving a gap. Re-reporting a break is harmless;
-      # missing one is the failure this workflow exists to prevent.
-      compare_window:
-        type: string
-        default: ''
+      # 0 disables it and restores per-push fan-out.
+      debounce_hours:
+        type: number
+        default: 20
     secrets:
       BOT_PAT:
         required: true
@@ -68,34 +71,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # a window needs history back to it; `HEAD~1` needs two commits
-          fetch-depth: ${{ inputs.compare_window != '' && 0 || 2 }}
+          fetch-depth: 2
 
       - name: Decide whether to fan out
         id: gate
+        env:
+          GH_TOKEN: ${{ secrets.BOT_PAT }}      # the debounce reads this workflow's own run history
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "go=true" >> "$GITHUB_OUTPUT"
             echo "manual dispatch - forcing the downstream fan-out"; exit 0
           fi
-          # WHAT "PREVIOUS" MEANS. Without a window it is the parent commit — one merge, one
-          # decision. With one it is `main` as of that long ago, so a day of merges is one decision
-          # and a day of breaking bumps is one fan-out.
-          WINDOW='${{ inputs.compare_window }}'
-          if [ -n "$WINDOW" ]; then
-            BASE=$(git rev-list -1 --before="$WINDOW ago" HEAD || echo "")
-            # Nothing that old in this branch's history — a young repository, or a shallow clone
-            # that did not reach back. Comparing against nothing would fan out on every run, so the
-            # honest answer is to do nothing and say why.
-            if [ -z "$BASE" ] || [ "$BASE" = "$(git rev-parse HEAD)" ]; then
-              echo "go=false" >> "$GITHUB_OUTPUT"
-              echo "no commit older than '$WINDOW' to compare against - nothing to fan out"; exit 0
-            fi
-            echo "comparing against $BASE (main as of $WINDOW ago)"
-          else
-            BASE=HEAD~1
-          fi
-          PREV=$(git show "$BASE:Project.toml" 2>/dev/null | grep '^version' | head -1 | sed 's/.*"\(.*\)"/\1/' || echo "")
+          PREV=$(git show HEAD~1:Project.toml 2>/dev/null | grep '^version' | head -1 | sed 's/.*"\(.*\)"/\1/' || echo "")
           CURR=$(grep '^version' Project.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           go=false
           if [ -n "$PREV" ] && [ "$PREV" != "$CURR" ]; then
@@ -105,8 +92,42 @@ jobs:
             elif [ "$cM" = "$pM" ] && [ "$pM" = "0" ] && [ "${cm:-0}" -gt "${pm:-0}" ]; then go=true
             fi
           fi
-          echo "go=$go" >> "$GITHUB_OUTPUT"
           echo "version: ${PREV:-none} -> $CURR  (breaking=$go)"
+
+          # THE DEBOUNCE. A breaking bump is necessary but not sufficient: if this workflow already
+          # fanned out within the window, the dependents have already been told, and telling them
+          # again costs a full round of their CI to report the break they are already reporting.
+          #
+          # STATE COMES FROM THE RUN HISTORY, not from a variable or a tag. A stored marker is one
+          # more thing to write, to have permission for, and to go stale; the runs are already the
+          # record. `fanned-out` is written into the job summary by the dispatch step below, so a
+          # run that DECIDED to fan out is distinguishable from one that merely succeeded — which
+          # matters, because most runs of this workflow succeed by doing nothing.
+          HRS='${{ inputs.debounce_hours }}'
+          if [ "$go" = "true" ] && [ "${HRS:-0}" != "0" ]; then
+            since=$(date -u -d "$HRS hours ago" +%Y-%m-%dT%H:%M:%SZ)
+            # `|| echo ""` and no `set -e`: if the API is unreachable we must fan OUT, not swallow
+            # the report. Failing open is the safe direction — a duplicate costs runner time, a
+            # miss costs the weeks of silence this workflow was written to end.
+            for rid in $(gh run list --workflow "${{ github.workflow }}" --repo "${{ github.repository }}" \
+                           --limit 40 --json databaseId,conclusion,createdAt \
+                           --jq "[.[] | select(.conclusion == \"success\" and .createdAt > \"$since\")] | .[].databaseId" \
+                         2>/dev/null || echo ""); do
+              [ "$rid" = "${{ github.run_id }}" ] && continue
+              # `success` on THIS step means that run actually dispatched; `skipped` means its gate
+              # said no. Verified on ParaLinearAlgebra's last ten runs: the five `feat!:` merges read
+              # `success` and the five `fix:`/`docs:` ones read `skipped`, so the two are cleanly
+              # distinguishable and most runs of this workflow succeed by doing nothing.
+              if [ "$(gh run view "$rid" --repo "${{ github.repository }}" --json jobs \
+                        --jq '.jobs[].steps[] | select(.name == "Trigger the CI of direct dependents") | .conclusion' \
+                      2>/dev/null | head -1)" = "success" ]; then
+                go=false
+                echo "debounced: run $rid fanned out within the last ${HRS} h - the dependents already know"
+                break
+              fi
+            done
+          fi
+          echo "go=$go" >> "$GITHUB_OUTPUT"
 
       - name: Trigger the CI of direct dependents
         if: steps.gate.outputs.go == 'true'
