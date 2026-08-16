@@ -37,6 +37,25 @@ on:
       runner:
         type: string
         default: ''
+      # BATCHING. Empty (the default) keeps the original behaviour exactly: the caller fires on
+      # `push` and the gate compares `HEAD~1` with `HEAD`, so one merge is one decision.
+      #
+      # Set it to a `git --before=` window (e.g. `'25 hours'`) and the caller can fire on a nightly
+      # `schedule` instead: the gate then compares `HEAD` with whatever `main` was that long ago, so
+      # a day of merges produces ONE fan-out rather than one per breaking bump.
+      #
+      # WHY IT EXISTS, measured 2026-08-16 on ParaLinearAlgebra: seven breaking minors landed in one
+      # day (0.39 → 0.45), each firing this workflow, each dispatching seven dependents — 60
+      # downstream CI runs in a day, on the same `rosina` pool everything else queues behind. The
+      # breakage is the same breakage whether it is reported once or seven times; the seven cost a
+      # day of everyone's runner time.
+      #
+      # The window should EXCEED the schedule interval (25 h for a daily cron), so a late or skipped
+      # run overlaps the previous window instead of leaving a gap. Re-reporting a break is harmless;
+      # missing one is the failure this workflow exists to prevent.
+      compare_window:
+        type: string
+        default: ''
     secrets:
       BOT_PAT:
         required: true
@@ -49,7 +68,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 2
+          # a window needs history back to it; `HEAD~1` needs two commits
+          fetch-depth: ${{ inputs.compare_window != '' && 0 || 2 }}
 
       - name: Decide whether to fan out
         id: gate
@@ -58,7 +78,24 @@ jobs:
             echo "go=true" >> "$GITHUB_OUTPUT"
             echo "manual dispatch - forcing the downstream fan-out"; exit 0
           fi
-          PREV=$(git show HEAD~1:Project.toml 2>/dev/null | grep '^version' | head -1 | sed 's/.*"\(.*\)"/\1/' || echo "")
+          # WHAT "PREVIOUS" MEANS. Without a window it is the parent commit — one merge, one
+          # decision. With one it is `main` as of that long ago, so a day of merges is one decision
+          # and a day of breaking bumps is one fan-out.
+          WINDOW='${{ inputs.compare_window }}'
+          if [ -n "$WINDOW" ]; then
+            BASE=$(git rev-list -1 --before="$WINDOW ago" HEAD || echo "")
+            # Nothing that old in this branch's history — a young repository, or a shallow clone
+            # that did not reach back. Comparing against nothing would fan out on every run, so the
+            # honest answer is to do nothing and say why.
+            if [ -z "$BASE" ] || [ "$BASE" = "$(git rev-parse HEAD)" ]; then
+              echo "go=false" >> "$GITHUB_OUTPUT"
+              echo "no commit older than '$WINDOW' to compare against - nothing to fan out"; exit 0
+            fi
+            echo "comparing against $BASE (main as of $WINDOW ago)"
+          else
+            BASE=HEAD~1
+          fi
+          PREV=$(git show "$BASE:Project.toml" 2>/dev/null | grep '^version' | head -1 | sed 's/.*"\(.*\)"/\1/' || echo "")
           CURR=$(grep '^version' Project.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           go=false
           if [ -n "$PREV" ] && [ "$PREV" != "$CURR" ]; then
