@@ -1,0 +1,130 @@
+name: ArtifactPrune
+
+# Reusable deletion of EXPIRED Actions artifacts.
+#
+# WHY THIS EXISTS, AND WHY `retention-days` IS NOT THE ANSWER. On 2026-08-19 every CI run in the
+# fleet went red at once — `Shard labels` failing, and with it `All shards passed`, `Collect
+# coverage` and `Coverage (upload)`, because that job builds the shard matrix and nothing downstream
+# runs without it. The visible tail of the log is an Azure `BlobNotFound`, which reads like a
+# transient blip and is not one; the real error is further up the same step:
+#
+#     ##[error]Failed to CreateArtifact: Artifact storage quota has been hit.
+#     Unable to upload any new artifacts. Usage is recalculated every 6-12 hours.
+#
+# The obvious fix — shorten retention — was already in place. `julia-testshards.yml` uploads
+# `<prefix>-coverage-<sid>` with `retention-days: 1`, the minimum. Measured on the same day:
+#
+#     created 2026-07-14T11:18   expires 2026-07-15T11:18   still present 2026-08-19
+#
+# Five weeks past a one-day retention. GitHub marks an artifact `expired: true` on schedule and
+# then deletes it whenever it gets round to it, and the undeleted ones still count against the
+# quota. So retention controls when an artifact becomes USELESS, not when it stops being CHARGED,
+# and no retention setting can prevent this. Only deleting them does.
+#
+# The scale, measured across six repositories the same day:
+#
+#     repo                       artifacts   size      expired
+#     ParaLinearAlgebra.jl          11296   0.87 GB      8004
+#     FunctionMeasures.jl           10557   0.90 GB      8362
+#     ComplexAnalysis.jl             8229   0.42 GB      6082
+#     ParameterizedITensor.jl        7661   0.23 GB      5133
+#     ITensorcMPS.jl                 2127   0.02 GB      1391
+#     ParameterizedITensorMPS.jl     1853   0.01 GB      1768
+#     TOTAL                         41723   2.44 GB     30740  (2.32 GB, 95% of the bytes)
+#
+# and 97% of those bytes are `testshards-coverage-*` — eight per sharded run, several runs a day.
+# A repository doing normal work reaches the quota in weeks. That is why this is SCHEDULED rather
+# than left to whoever notices: by the time it is noticed, every branch in the fleet is red, and a
+# rerun cannot clear it (the quota does not fall until something is deleted AND 6-12 hours pass for
+# the recalculation).
+#
+# ONLY `expired == true` IS EVER DELETED. An expired artifact is already unretrievable — GitHub
+# refuses to download it — so removing it destroys nothing a caller could still have used. A live
+# artifact is never touched regardless of age, which is what makes this safe to schedule unattended.
+# `dry-run` exists so a first run can be read before anything is removed.
+
+on:
+  workflow_call:
+    inputs:
+      dry-run:
+        description: "List what would be deleted and delete nothing."
+        type: boolean
+        default: false
+      max-delete:
+        description: >-
+          Stop after this many deletions. The REST budget is 5000/hour and each deletion spends one,
+          so a repository with tens of thousands of expired artifacts cannot be cleared in a single
+          run. Deleting the LARGEST first (below) means the bytes come down even when the count does
+          not — the top 4000 of 30740 carried 1.15 GB of the 2.32 GB, measured.
+        type: number
+        default: 4000
+      runner:
+        description: "Runner labels, as a JSON array. Defaults to hosted, since this is API-only."
+        type: string
+        default: '"ubuntu-latest"'
+
+permissions:
+  actions: write
+
+jobs:
+  prune:
+    name: prune expired artifacts
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    steps:
+      - name: Delete expired artifacts, largest first
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DRY: ${{ inputs.dry-run }}
+          MAXDEL: ${{ inputs.max-delete }}
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          # Largest first: the quota is measured in bytes, so a run that is cut short by
+          # `max-delete` should still have removed as many bytes as possible.
+          gh api "repos/$REPO/actions/artifacts" --paginate \
+            -q '.artifacts[]|select(.expired==true)|"\(.size_in_bytes)\t\(.id)\t\(.name)"' \
+            | sort -rn > expired.tsv || true
+
+          n=$(wc -l < expired.tsv)
+          bytes=$(awk -F'\t' '{t+=$1} END{printf "%.0f", t+0}' expired.tsv)
+          printf 'expired: %d artifacts, %.2f GB\n' "$n" "$(echo "$bytes" | awk '{print $1/1073741824}')"
+
+          if [ "$n" -eq 0 ]; then
+            echo "nothing to do"
+            exit 0
+          fi
+
+          if [ "$DRY" = "true" ]; then
+            echo "--- dry-run: the 20 largest that WOULD be deleted ---"
+            head -20 expired.tsv | awk -F'\t' '{printf "  %10.2f MB  %s\n", $1/1048576, $3}'
+            exit 0
+          fi
+
+          deleted=0
+          freed=0
+          while IFS=$'\t' read -r sz id name; do
+            [ "$deleted" -ge "$MAXDEL" ] && { echo "reached max-delete=$MAXDEL"; break; }
+            # A failed delete is not fatal: another run may have removed it already, and the next
+            # scheduled run will pick up anything left. Failing the job here would turn a partial
+            # cleanup into a red workflow for no gain.
+            if gh api -X DELETE "repos/$REPO/actions/artifacts/$id" >/dev/null 2>&1; then
+              deleted=$((deleted + 1))
+              freed=$((freed + sz))
+            fi
+          done < expired.tsv
+
+          printf 'deleted %d artifacts, freed %.2f GB of %.2f GB expired\n' \
+            "$deleted" "$(echo "$freed" | awk '{print $1/1073741824}')" \
+            "$(echo "$bytes" | awk '{print $1/1073741824}')"
+          {
+            echo "### Artifact prune"
+            echo ""
+            printf 'deleted **%d** artifacts, freed **%.2f GB** (of %.2f GB expired, %d total)\n' \
+              "$deleted" "$(echo "$freed" | awk '{print $1/1073741824}')" \
+              "$(echo "$bytes" | awk '{print $1/1073741824}')" "$n"
+            echo ""
+            echo "Quota usage is recalculated by GitHub every 6-12 hours, so a run that frees space"
+            echo "does not unblock uploads immediately."
+          } >> "$GITHUB_STEP_SUMMARY"
