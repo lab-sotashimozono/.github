@@ -93,7 +93,12 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x scripts/reconcile.sh scripts/apply-ruleset.sh
-          # shellcheck disable=SC2086 — word splitting is the intent for a space-separated list
+          # Word splitting is the intent here: `repos` is a space-separated list.
+          # The rationale lives on its OWN comment line: a `# shellcheck` line may contain
+          # nothing but directives, so trailing prose is parsed as a second key=value pair.
+          # That is SC1125 — an *error*, which failed this repo's own `Lint workflows` on every
+          # push to main, and it also made the SC2086 suppression itself be ignored.
+          # shellcheck disable=SC2086
           scripts/reconcile.sh ${{ inputs.repos }} | tee reconcile.log
 
       - name: Publish summary
