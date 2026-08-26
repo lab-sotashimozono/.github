@@ -16,10 +16,18 @@ name: Template bootstrap
 #   * no-ops once initialized: `marker` existing IS the "not yet done" flag, which the
 #     script re-checks itself, so a race cannot double-apply it.
 #
-# Runs on ubuntu-latest by DELIBERATELY, unlike the org's usual "private → rosina" rule:
-# this is a one-shot ~1-minute job at repository-creation time, where robustness beats
-# minute-shaving, and self-hosted runners refuse PUBLIC-repo jobs — so a public copy of the
-# template would otherwise never initialize. Callers can still override `runner`.
+# The pool follows the CALLER's visibility, like the rest of the hub's reusables — private ->
+# rosina, public -> ubuntu-latest. Canonical note: `autoregister.yml`.
+#
+# This job used to pin `ubuntu-latest` unconditionally, reasoning that a one-shot ~1-minute
+# job should favour robustness over minute-shaving and that self-hosted runners refuse
+# PUBLIC-repo jobs. The second half is still true and is why public callers keep
+# ubuntu-latest. The first half was wrong in the direction that matters: hosted minutes are
+# a finite, shared, PRIVATE-repo-only budget, and when they run out the job does not skip —
+# it FAILS, in ~3 s, with no runner assigned and no step logged. `StructuredITensors.jl`
+# accumulated 6 such failures on `main` after it was already initialized, which is the worst
+# shape a guard can take: red, permanent, and about work that no longer needs doing.
+# A private caller now lands on rosina, where it initializes for real.
 #
 # The commit is pushed with GITHUB_TOKEN, which by design does NOT trigger further workflow
 # runs: no loop, but also no CI on the bootstrap commit — CI runs on the next human push.
@@ -31,10 +39,12 @@ name: Template bootstrap
 on:
   workflow_call:
     inputs:
+      # `runs-on` as JSON. **Leave unset** and the pool follows the CALLER's visibility —
+      # private -> rosina, public -> ubuntu-latest. Canonical note: `autoregister.yml`.
       runner:
         description: 'runs-on as JSON: ''"ubuntu-latest"'' or ''["self-hosted","rosina"]'''
         type: string
-        default: '"ubuntu-latest"'
+        default: ''
       template-repo:
         description: 'owner/name of the template itself — never bootstrapped'
         type: string
@@ -52,7 +62,7 @@ jobs:
   bootstrap:
     name: Initialize package from repository name
     if: github.repository != inputs.template-repo
-    runs-on: ${{ fromJSON(inputs.runner) }}
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || (github.event.repository.private && fromJSON('["self-hosted","rosina"]') || 'ubuntu-latest') }}
     steps:
       - uses: actions/checkout@v4
 
