@@ -27,3 +27,11 @@ jobs:
         with:
           reporter: github-check
           fail_level: error
+          # `nofilter` DELIBERATELY, overriding the action's `added` default, which reports only
+          # lines the event touched. That default made this workflow lint two different things
+          # under one name: a `pull_request` run saw the PR's diff, a `push` run had no diff to
+          # filter against and scanned the whole repository. So a pre-existing error was invisible
+          # to every PR and failed every push to main — `reconcile.yml`'s SC1125 sat there for 13
+          # consecutive main runs while all 13 PRs were green. `nofilter` makes both events scan
+          # the same lines, so a green PR now means a green main.
+          filter_mode: nofilter
