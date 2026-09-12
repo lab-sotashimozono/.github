@@ -107,6 +107,33 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          name=$(grep -m1 '^name' Project.toml | sed 's/.*"\(.*\)"/\1/')
+          uuid=$(grep -m1 '^uuid' Project.toml | sed 's/.*"\(.*\)"/\1/')
+
+          # ONLY for a package General ALREADY HAS. A first publication to a public registry is
+          # irreversible and is a human decision, and this step used to answer any version bump on
+          # main with a request to make one -- which is why `ITensorModels.jl` carries its whole
+          # caller renamed `AutoRegister.yml.disabled`, with a note saying the next ordinary PR
+          # would have published a package deliberately kept out of General. Measured 2026-09-12:
+          # three of the four public callers in the fleet are NOT in General, and `ITensorSiteKit`
+          # had this step fire twice (2026-07-30, 2026-08-03). Nothing came of it only because the
+          # JuliaRegistrator app is not installed there -- an absent signal, not a guard.
+          #
+          # Derived, not declared, for the same reason the pool below is: an input every caller has
+          # to remember to pass is an input that will be wrong. Compare the UUID rather than trust
+          # the path, so another package owning the name cannot read as ours.
+          f=$(printf '%s' "$name" | cut -c1 | tr '[:lower:]' '[:upper:]')
+          in_general=$(gh api "repos/JuliaRegistries/General/contents/$f/$name/Package.toml" \
+                         -H 'Accept: application/vnd.github.raw' 2>/dev/null \
+                       | grep -m1 '^uuid' | sed 's/.*"\(.*\)"/\1/' || true)
+          if [ "$in_general" != "$uuid" ]; then
+            msg="A package's FIRST General release is a human act: comment"
+            msg="$msg '@JuliaRegistrator register' by hand once, and every later bump lands here."
+            echo "::notice title=[AutoRegister] $name is not in General ::$msg"
+            exit 0
+          fi
+
           BODY=$(printf '@JuliaRegistrator register\n\n## Changelog\n\nRelease v%s.' "${{ steps.v.outputs.curr }}")
           gh api "repos/${{ github.repository }}/commits/${{ github.event.workflow_run.head_sha }}/comments" \
             -f body="$BODY"
@@ -191,7 +218,8 @@ jobs:
   # that can catch a bad registration.
   #
   # LabRegistry's nightly `Sync` job is the BACKSTOP, not the primary path — it catches releases that
-  # happened while the pool was down. This job is what makes registration prompt.
+  # happened while the pool was down. This job is what makes registration prompt. Its public
+  # counterpart is `register-lab-public` below, which cannot do the same thing and says why.
   register-lab:
     needs: autoregister
     if: >
@@ -261,3 +289,63 @@ jobs:
 
           Registered so CompatHelper can see the version. Resolution is unaffected — internal deps
           stay pinned \`[sources] rev = \"main\"\`."
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PUBLIC → ask LabRegistry to register it, because this side cannot.
+  #
+  # `register-lab` is gated `private == true` and has to be: it needs the pool's persistent org
+  # login for the cross-repo write, and the org runner group is `allows_public: false`, so a public
+  # caller asking for the pool does not fail, it QUEUES FOREVER. So the five public packages among
+  # LabRegistry's 27 had no prompt path at all and depended on its nightly cron — which is not a
+  # backstop for them but the mechanism. Measured 2026-09-12 on `ITensorModels` v0.7.33: a consumer
+  # bumped its `[compat]` to the merged version and every CI shard died in `julia-buildpkg` with
+  # `possible versions are: … - 0.7.32`, nine minutes before the registration landed.
+  #
+  # So this job registers nothing itself; it asks the job that already can, and lets LabRegistry's
+  # own CI and AutoMerge gate the result exactly as they do for a private release. One
+  # implementation of registering, two ways of reaching it.
+  #
+  # THE CREDENTIAL IS `BOT_PAT`, and this is the one job in the fleet for which that is the easy
+  # choice: GitHub Free delivers org secrets to PUBLIC repos and withholds them from private ones,
+  # which is inverted from what everything else here wants and exactly right here. `repo` scope is
+  # what the dispatch endpoint documents as sufficient; it notably does NOT carry `workflow`, and
+  # nothing below writes a workflow file.
+  #
+  # FAILS OPEN, deliberately: a missing token or a refused dispatch warns and exits 0, leaving the
+  # nightly `Sync` to reconcile — which is precisely the behaviour this job replaces, so it cannot
+  # be worse than not existing. That matters because the credential cannot be exercised from
+  # anywhere but a real public release.
+  register-lab-public:
+    needs: autoregister
+    if: >
+      needs.autoregister.outputs.changed == 'true' &&
+      github.event.repository.private == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - name: Ask LabRegistry to register this version
+        env:
+          CRED: ${{ secrets.BOT_PAT }}
+          VER: ${{ needs.autoregister.outputs.curr }}
+          REG: lab-sotashimozono/LabRegistry
+        run: |
+          set -euo pipefail
+          if [ -z "${CRED:-}" ]; then
+            echo "::warning::no BOT_PAT delivered here — skipping; the nightly Sync will pick v$VER up"
+            exit 0
+          fi
+          echo "::add-mask::$CRED"
+          export GH_TOKEN="$CRED"
+          name=$(grep -m1 '^name' Project.toml | sed 's/.*"\(.*\)"/\1/')
+
+          # `-f only=` needs LabRegistry#766. Falling back to an unscoped dispatch keeps this
+          # independent of which repository merges first: the sweep is correct either way, just
+          # noisier, since `sync.jl` only ever ADDS a version a package's main already has.
+          if gh workflow run Sync.yml --repo "$REG" -f only="$name" 2>/dev/null \
+             || gh workflow run Sync.yml --repo "$REG"; then
+            echo "Asked $REG to register $name v$VER"
+          else
+            echo "::warning::dispatch refused — the nightly Sync will pick $name v$VER up"
+          fi
