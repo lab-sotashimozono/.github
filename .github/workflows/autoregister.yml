@@ -59,6 +59,19 @@ on:
       runner:
         type: string
         default: ''
+      # OFF by default, and that is the point: a caller that says nothing cannot publish itself to
+      # General. The step below used to answer any version bump on a public repo with
+      # `@JuliaRegistrator register`, which is irreversible and is a human decision. Measured
+      # 2026-09-13: of the 24 callers in this org, 21 are private (the step is unreachable for
+      # them), the 3 public ones are `ITensorModels`, `WilsonNRG` and `ITensorSiteKit`, and NONE of
+      # the 24 is in General -- so defaulting to off removes nothing that anything here uses.
+      # Derived alternatives were considered and rejected: an API lookup asking whether the package
+      # is already in General is a check whose failure mode has to be reasoned about, and this has
+      # none to reason about.
+      general:
+        description: 'Request General registration on a version bump (PUBLIC repos only)'
+        type: boolean
+        default: false
     secrets:
       # BOT_PAT (org secret) must be DECLARED so it reliably reaches this reusable
       # workflow from a `workflow_run`-triggered caller — `secrets: inherit` alone was
@@ -103,7 +116,9 @@ jobs:
           echo "version: $PREV -> $CURR"
 
       - name: Public → request General registration (@JuliaRegistrator)
-        if: steps.v.outputs.changed == 'true' && github.event.repository.private == false
+        if: >
+          steps.v.outputs.changed == 'true' && github.event.repository.private == false &&
+          inputs.general
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
