@@ -80,7 +80,18 @@ jobs:
           else
             echo "LabRegistry unreachable from this runner — General only (unchanged behaviour)"
           fi
-          LAB_REGISTRY="$LAB_REGISTRY" GITHUB_TOKEN="$cred" julia --color=yes -e '
+          # WHO WILL AUTHOR THE PR. CompatHelper skips a bump only if an open PR with the same title
+          # exists AND was authored by `ci_cfg.username` (`get_pr_titles` -> `my_prs`,
+          # CompatHelper/src/utilities/new_versions.jl). That username defaults to
+          # "github-actions[bot]", but with BOT_PAT or the runner's login the PR is authored by THAT
+          # account, so the filter discarded every one of its own PRs and it re-opened the same bump
+          # every run. Measured: StructuredITensors.jl #136-#225, a Finch 2 pair every 4 h for 10
+          # days, each a full sharded CI run. Ask the token who it is; github.token cannot answer
+          # `/user`, and for it the bot default is in fact right.
+          author=$(GH_TOKEN="$cred" gh api user --jq .login 2>/dev/null || true)
+          [ -z "$author" ] && author="github-actions[bot]"
+          echo "PR author: $author"
+          PR_AUTHOR="$author" LAB_REGISTRY="$LAB_REGISTRY" GITHUB_TOKEN="$cred" julia --color=yes -e '
             using Pkg
             Pkg.activate(; temp = true)
             Pkg.add("CompatHelper")
@@ -97,21 +108,16 @@ jobs:
                     url  = "https://github.com/lab-sotashimozono/LabRegistry.git",
                 ))
             end
-            CompatHelper.main(; registries = regs)'
+            CompatHelper.main(ENV, CompatHelper.GitHubActions(; username = ENV["PR_AUTHOR"]);
+                              registries = regs)'
 
           # ---- collapse duplicate bump PRs -------------------------------------------------
           #
-          # CompatHelper decides "is there already an open PR for this bump?" through the SEARCH
-          # API, which returns nothing for PRIVATE-repo content under any token we have here — the
-          # same blindness that made release notes say "No merged pull requests". So on a private
-          # repo it does not find its own PR and opens a NEW one every run. Measured 2026-08-02 on
-          # ITensorPartitionFunctions.jl: three byte-identical `QAtlas -> 0.31` PRs (#17, #18, #19)
-          # created 12:49, 16:42, 20:40 — one per scheduled run, i.e. ~6/day/dependency.
-          #
-          # The REST *list* endpoint DOES work on a private repo (it is `--search` specifically that
-          # is blind), so dedupe is possible here even though CompatHelper cannot do it itself.
-          # Group the open `compathelper/*` PRs by TITLE — which encodes dep, section and target
-          # version, so identical titles really are the same bump — and keep only the newest.
+          # BACKSTOP ONLY. The duplicate PRs this used to collapse were caused by the author mismatch
+          # fixed above, not (as this comment once said) by the search API — CompatHelper lists PRs
+          # through the REST list endpoint. Kept for the case the fix misses (e.g. the author
+          # resolves differently between runs): group the open `compathelper/*` PRs by TITLE —
+          # which encodes dep, section and target version — and keep only the newest.
           #
           # Runs AFTER CompatHelper so this run's own PR is included and the collapse is immediate.
           # Hygiene, never correctness: any failure here is reported and ignored.
@@ -134,7 +140,7 @@ jobs:
               for n in $stale; do
                 echo "  closing duplicate #$n"
                 GH_TOKEN="$cred" gh pr close "$n" --repo "$GITHUB_REPOSITORY" --delete-branch \
-                  --comment "Superseded by a newer CompatHelper run proposing the same bump. Closed automatically: CompatHelper cannot see its own open PRs on a private repo (its check uses the search API, which is blind there), so it re-opens one every run." \
+                  --comment "Superseded by a newer CompatHelper run proposing the same bump. Closed automatically as a duplicate." \
                   >/dev/null 2>&1 || echo "    close FAILED for #$n"
               done
             fi
